@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -475,66 +476,68 @@ func startDockerBridge() {
 }
 
 func handleContainersJSON(w http.ResponseWriter, r *http.Request) {
-	home, err := os.UserHomeDir()
+	cmd := exec.Command("/usr/local/bin/container", "list", "--all", "--format", "json")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	contsPath := filepath.Join(home, ".apc", "containers.json")
-
-	file, err := os.Open(contsPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("[]"))
-		return
-	}
-	defer file.Close()
-
-	type LocalContainer struct {
-		ID    string   `json:"id"`
-		Name  string   `json:"name"`
-		Image string   `json:"image"`
-		State string   `json:"state"`
-		Ports []string `json:"ports"`
-	}
-
-	var localConts []LocalContainer
-	if err := json.NewDecoder(file).Decode(&localConts); err != nil {
+		log.Printf("[docker-bridge] Failed to list containers: %v (Output: %s)", err, string(out))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("[]"))
 		return
 	}
 
-	dockerConts := make([]DockerContainer, 0, len(localConts))
-	for _, c := range localConts {
+	type CLIContainerListItem struct {
+		Status        string `json:"status"`
+		Configuration struct {
+			ID    string `json:"id"`
+			Image struct {
+				Reference string `json:"reference"`
+			} `json:"image"`
+			PublishedPorts []struct {
+				HostPort      int `json:"hostPort"`
+				ContainerPort int `json:"containerPort"`
+			} `json:"publishedPorts"`
+		} `json:"configuration"`
+	}
+
+	var list []CLIContainerListItem
+	if err := json.Unmarshal(out, &list); err != nil {
+		log.Printf("[docker-bridge] Failed to unmarshal CLI containers list: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+
+	dockerConts := make([]DockerContainer, 0, len(list))
+	for _, c := range list {
 		dockerPorts := []DockerPort{}
-		for _, pStr := range c.Ports {
-			var pub, priv int
-			_, err := fmt.Sscanf(pStr, "%d:%d", &pub, &priv)
-			if err != nil {
-				_, err = fmt.Sscanf(pStr, "%d", &priv)
-				pub = priv
-			}
+		for _, p := range c.Configuration.PublishedPorts {
 			dockerPorts = append(dockerPorts, DockerPort{
 				IP:          "0.0.0.0",
-				PrivatePort: priv,
-				PublicPort:  pub,
+				PrivatePort: p.ContainerPort,
+				PublicPort:  p.HostPort,
 				Type:        "tcp",
 			})
 		}
 
 		statusStr := "Stopped"
-		if c.State == "running" {
+		if strings.ToLower(c.Status) == "running" {
 			statusStr = "Up 15 minutes"
 		}
 
+		displayImage := c.Configuration.Image.Reference
+		if strings.HasPrefix(displayImage, "docker.io/library/") {
+			displayImage = strings.TrimPrefix(displayImage, "docker.io/library/")
+		} else if strings.HasPrefix(displayImage, "docker.io/") {
+			displayImage = strings.TrimPrefix(displayImage, "docker.io/")
+		}
+
 		dockerConts = append(dockerConts, DockerContainer{
-			ID:     c.ID,
-			Names:  []string{"/" + c.Name},
-			Image:  c.Image,
-			State:  c.State,
+			ID:     c.Configuration.ID,
+			Names:  []string{"/" + c.Configuration.ID},
+			Image:  displayImage,
+			State:  strings.ToLower(c.Status),
 			Status: statusStr,
 			Ports:  dockerPorts,
 		})
@@ -546,47 +549,46 @@ func handleContainersJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleImagesJSON(w http.ResponseWriter, r *http.Request) {
-	home, err := os.UserHomeDir()
+	cmd := exec.Command("/usr/local/bin/container", "image", "list", "--format", "json")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	imgsPath := filepath.Join(home, ".apc", "images.json")
-
-	file, err := os.Open(imgsPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("[]"))
-		return
-	}
-	defer file.Close()
-
-	type LocalImage struct {
-		ID         string `json:"id"`
-		Repository string `json:"repository"`
-		Tag        string `json:"tag"`
-		Size       string `json:"size"`
-	}
-
-	var localImgs []LocalImage
-	if err := json.NewDecoder(file).Decode(&localImgs); err != nil {
+		log.Printf("[docker-bridge] Failed to list images: %v (Output: %s)", err, string(out))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("[]"))
 		return
 	}
 
-	dockerImgs := make([]DockerImage, 0, len(localImgs))
-	for _, img := range localImgs {
-		sizeBytes := parseSizeToBytes(img.Size)
-		repoTag := img.Repository + ":" + img.Tag
+	type CLIImageListItem struct {
+		Reference  string `json:"reference"`
+		Descriptor struct {
+			Size int64 `json:"size"`
+		} `json:"descriptor"`
+	}
+
+	var list []CLIImageListItem
+	if err := json.Unmarshal(out, &list); err != nil {
+		log.Printf("[docker-bridge] Failed to unmarshal CLI images list: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+
+	dockerImgs := make([]DockerImage, 0, len(list))
+	for _, img := range list {
+		displayImage := img.Reference
+		if strings.HasPrefix(displayImage, "docker.io/library/") {
+			displayImage = strings.TrimPrefix(displayImage, "docker.io/library/")
+		} else if strings.HasPrefix(displayImage, "docker.io/") {
+			displayImage = strings.TrimPrefix(displayImage, "docker.io/")
+		}
 
 		dockerImgs = append(dockerImgs, DockerImage{
-			ID:          img.ID,
-			RepoTags:    []string{repoTag},
-			Size:        sizeBytes,
-			VirtualSize: sizeBytes,
+			ID:          img.Reference,
+			RepoTags:    []string{displayImage},
+			Size:        img.Descriptor.Size,
+			VirtualSize: img.Descriptor.Size,
 		})
 	}
 
