@@ -1,0 +1,14 @@
+# macOS metadata
+.DS_Store
+
+# Swift build directories
+.build/
+build/
+apc-core/.build/
+
+# Compiled package binaries
+ShibaStack.dmg
+*.dmg
+
+# User local testing cache
+.apc/
