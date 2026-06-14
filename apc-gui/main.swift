@@ -327,6 +327,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 // MARK: - Main Dashboard View
 struct MainDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
+    @State private var showingPruneConfirmation = false
     
     var body: some View {
         NavigationSplitView {
@@ -419,7 +420,7 @@ struct MainDashboardView: View {
                 .help("Restart ShibaStack Engine")
                 .disabled(state.vmState != "running")
                 
-                Button(action: state.pruneStorage) {
+                Button(action: { showingPruneConfirmation = true }) {
                     HStack {
                         Image(systemName: "sparkles")
                         Text("Prune Storage")
@@ -427,6 +428,14 @@ struct MainDashboardView: View {
                 }
                 .help("One-Click Disk Clean")
             }
+        }
+        .alert("Prune Unused Storage?", isPresented: $showingPruneConfirmation) {
+            Button("Prune", role: .destructive) {
+                state.pruneStorage()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete all inactive container volumes, caches, and unused images. This action cannot be undone.")
         }
     }
 }
