@@ -138,11 +138,13 @@ class GUIStateManager: ObservableObject {
     @Published var goInstalled: Bool = false
     @Published var envInitialized: Bool = false
     @Published var resolverConfigured: Bool = false
+    @Published var kernelsInstalled: Bool = false
     
     // Installation progress triggers
     @Published var installingGo: Bool = false
     @Published var installingTools: Bool = false
     @Published var configuringResolver: Bool = false
+    @Published var downloadingKernels: Bool = false
     
     @Published var selectedSidebarItem: SidebarItem? = .getStarted
     @Published var selectedContainerIDs = Set<String>() {
@@ -360,12 +362,14 @@ class GUIStateManager: ObservableObject {
             let envExists = FileManager.default.fileExists(atPath: apcDir.path)
             
             let resolverExists = FileManager.default.fileExists(atPath: "/etc/resolver/apc.local")
+            let kernelExists = FileManager.default.fileExists(atPath: home.appendingPathComponent(".apc/boot/vmlinuz").path)
             
             DispatchQueue.main.async {
                 self.swiftInstalled = swiftPath
                 self.goInstalled = goPath
                 self.envInitialized = envExists
                 self.resolverConfigured = resolverExists
+                self.kernelsInstalled = kernelExists
             }
         }
     }
@@ -500,6 +504,37 @@ class GUIStateManager: ObservableObject {
         // Instantiates ContainerManager to generate files
         _ = ContainerManager.shared
         self.checkDependencies()
+    }
+    
+    func downloadBootImages() {
+        self.downloadingKernels = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let bootDir = home.appendingPathComponent(".apc/boot")
+            try? FileManager.default.createDirectory(at: bootDir, withIntermediateDirectories: true, attributes: nil)
+            
+            let kernelURL = bootDir.appendingPathComponent("vmlinuz")
+            let initrdURL = bootDir.appendingPathComponent("initrd.img")
+            
+            // Download Kernel (vmlinuz) using curl
+            let downloadKernel = Process()
+            downloadKernel.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            downloadKernel.arguments = ["-L", "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/netboot/vmlinuz-virt", "-o", kernelURL.path]
+            try? downloadKernel.run()
+            downloadKernel.waitUntilExit()
+            
+            // Download Initramfs (initrd) using curl
+            let downloadInitrd = Process()
+            downloadInitrd.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            downloadInitrd.arguments = ["-L", "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/netboot/initramfs-virt", "-o", initrdURL.path]
+            try? downloadInitrd.run()
+            downloadInitrd.waitUntilExit()
+            
+            DispatchQueue.main.async {
+                self.downloadingKernels = false
+                self.checkDependencies()
+            }
+        }
     }
     
     func resetEnvironment() {
@@ -1929,6 +1964,16 @@ struct GetStartedView: View {
                         isInstalling: false,
                         actionLabel: "Initialize Directory",
                         action: state.initializeEnvironment
+                    )
+                    
+                    // Guest Alpine Boot Images Card (Converts mock state to 100% real virtualization!)
+                    DependencyCardView(
+                        title: "Alpine Linux Guest Kernels",
+                        description: "Downloads lightweight, official Alpine Linux aarch64 netboot kernels (vmlinuz-virt & initramfs-virt) needed to boot the native virtual machine.",
+                        isInstalled: state.kernelsInstalled,
+                        isInstalling: state.downloadingKernels,
+                        actionLabel: "Download Kernels (24 MB)",
+                        action: state.downloadBootImages
                     )
                 }
                 

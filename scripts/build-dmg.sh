@@ -96,7 +96,7 @@ touch build/ShibaStack.app/Contents/Resources/ShibaStack.icns
 touch build/ShibaStack.app/Contents/Info.plist
 touch build/ShibaStack.app
 
-codesign -s - --force --deep build/ShibaStack.app
+codesign -s - --entitlements scripts/entitlements.plist --force --deep build/ShibaStack.app
 
 # Force Launch Services to register the new app bundle icon
 echo "Registering app icon with Launch Services..."
