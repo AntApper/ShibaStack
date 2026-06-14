@@ -582,18 +582,38 @@ struct ContainersDashboardView: View {
                     // Dynamic detail panel views
                     switch activeDetailTab {
                     case .logs:
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(selected.logs, id: \.self) { log in
-                                    Text(log)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .foregroundColor(.shibaCream)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(spacing: 0) {
+                            HStack {
+                                Spacer()
+                                Button(action: {
+                                    let allLogs = selected.logs.joined(separator: "\n")
+                                    let pasteboard = NSPasteboard.general
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(allLogs, forType: .string)
+                                }) {
+                                    Label("Copy Logs", systemImage: "doc.on.doc")
                                 }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .padding(6)
                             }
-                            .padding()
+                            .background(Color(NSColor.windowBackgroundColor))
+                            
+                            Divider()
+                            
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(selected.logs, id: \.self) { log in
+                                        Text(log)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .foregroundColor(.shibaCream)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                                .padding()
+                            }
+                            .background(Color.shibaCharcoal)
                         }
-                        .background(Color.shibaCharcoal)
                         
                     case .terminal:
                         // Real alpine interactive shell terminal simulation
