@@ -39,8 +39,8 @@ echo "PASS: Virtualization engine booted successfully."
 
 echo "--------------------------------------------------"
 echo "[3/7] Container Provisioning & Run"
-# Spin up a custom test container
-$APC_CLI run test-web alpine-nginx 80:8080
+# Spin up a custom test container using port 8081 to avoid collision with running web-app on port 80
+$APC_CLI run test-web alpine-nginx 8081:8080
 
 # Verify container was created and listed
 CONTAINERS=$($APC_CLI ps)

@@ -100,20 +100,65 @@ public final class ContainerManager {
         saveState()
     }
     
+    // MARK: - Port Collision Helpers
+    
+    private func getHostPorts(for container: Container) -> Set<Int> {
+        var hostPorts = Set<Int>()
+        for portStr in container.ports {
+            let parts = portStr.split(separator: ":")
+            if let first = parts.first, let parsed = Int(first) {
+                hostPorts.insert(parsed)
+            } else if let parsed = Int(portStr) {
+                hostPorts.insert(parsed)
+            }
+        }
+        return hostPorts
+    }
+    
+    public func hasPortCollision(for ports: [String], excludingContainerID: String? = nil) -> String? {
+        var prospectivePorts = Set<Int>()
+        for portStr in ports {
+            let parts = portStr.split(separator: ":")
+            if let first = parts.first, let parsed = Int(first) {
+                prospectivePorts.insert(parsed)
+            } else if let parsed = Int(portStr) {
+                prospectivePorts.insert(parsed)
+            }
+        }
+        
+        for cont in containers {
+            guard cont.state == "running" else { continue }
+            if let exclude = excludingContainerID, cont.id == exclude { continue }
+            
+            let activePorts = getHostPorts(for: cont)
+            let intersection = prospectivePorts.intersection(activePorts)
+            if !intersection.isEmpty {
+                let portsStr = intersection.map { String($0) }.joined(separator: ", ")
+                return "Port collision: Port(s) \(portsStr) already in use by running container '\(cont.name)'."
+            }
+        }
+        return nil
+    }
+    
     // MARK: - Container APIs
     
     public func getContainers() -> [Container] {
         return containers
     }
     
-    public func startContainer(id: String) {
-        if let idx = containers.firstIndex(where: { $0.id == id }) {
-            containers[idx].state = "running"
-            containers[idx].cpuUsage = 0.5
-            containers[idx].memoryUsage = 35.0
-            containers[idx].logs.append("\(getTimestamp()) [info] Container started by user request.")
-            saveState()
+    public func startContainer(id: String) throws {
+        guard let idx = containers.firstIndex(where: { $0.id == id }) else { return }
+        let container = containers[idx]
+        
+        if let collisionMessage = hasPortCollision(for: container.ports, excludingContainerID: id) {
+            throw NSError(domain: "ContainerManager", code: 1, userInfo: [NSLocalizedDescriptionKey: collisionMessage])
         }
+        
+        containers[idx].state = "running"
+        containers[idx].cpuUsage = 0.5
+        containers[idx].memoryUsage = 35.0
+        containers[idx].logs.append("\(getTimestamp()) [info] Container started by user request.")
+        saveState()
     }
     
     public func stopContainer(id: String) {
@@ -126,7 +171,11 @@ public final class ContainerManager {
         }
     }
     
-    public func runNewContainer(name: String, image: String, portMap: String) -> Container {
+    public func runNewContainer(name: String, image: String, portMap: String) throws -> Container {
+        if let collisionMessage = hasPortCollision(for: [portMap]) {
+            throw NSError(domain: "ContainerManager", code: 2, userInfo: [NSLocalizedDescriptionKey: collisionMessage])
+        }
+        
         let id = "c_custom_" + UUID().uuidString.prefix(6).lowercased()
         
         let newCont = Container(
@@ -152,6 +201,11 @@ public final class ContainerManager {
             containers[idx].ports.append(portMap)
             saveState()
         }
+    }
+    
+    public func removeContainer(id: String) {
+        containers.removeAll(where: { $0.id == id })
+        saveState()
     }
     
     // MARK: - Image APIs

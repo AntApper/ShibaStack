@@ -23,6 +23,7 @@ Core Commands:
   status                    Check the current status of the APC hypervisor
   ps                        List all active/stopped Alpine-based containers
   run <name> <image> <port> Spin up a new Alpine-based OCI container
+  rm <container_id>         Remove/delete an inactive container
   logs <container_id>       Stream/view active container logs
   prune                     Perform a one-click disk and unused volume clean
   doctor                    Perform system diagnostic check of dependencies
@@ -121,6 +122,21 @@ func main() {
     case "status":
         print("APC Virtualization Engine State: \(vmManager.getVMState().uppercased())")
         
+    case "rm":
+        guard args.count > 2 else {
+            print("Error: Please specify container ID to remove.")
+            print("Usage: apc rm <container_id>")
+            exit(1)
+        }
+        let targetId = args[2]
+        if let cont = containerManager.getContainers().first(where: { $0.id == targetId || $0.name == targetId }) {
+            containerManager.removeContainer(id: cont.id)
+            print("Successfully removed container \(cont.name) (\(cont.id)).")
+        } else {
+            print("Error: Container '\(targetId)' not found.")
+            exit(1)
+        }
+        
     case "ps":
         let list = containerManager.getContainers()
         print("\(pad("CONTAINER ID", toWidth: 16)) \(pad("NAME", toWidth: 20)) \(pad("IMAGE", toWidth: 22)) \(pad("STATUS", toWidth: 12)) \(pad("PORTS", toWidth: 12))")
@@ -140,9 +156,14 @@ func main() {
         let portMap = args[4]
         
         print("Spinning up new container '\(name)' from image '\(image)'...")
-        let newCont = containerManager.runNewContainer(name: name, image: image, portMap: portMap)
-        print("Successfully created and launched container \(newCont.id).")
-        print("Accessible via: http://\(name).apc.local")
+        do {
+            let newCont = try containerManager.runNewContainer(name: name, image: image, portMap: portMap)
+            print("Successfully created and launched container \(newCont.id).")
+            print("Accessible via: http://\(name).apc.local")
+        } catch {
+            print("Failed to run container: \(error.localizedDescription)")
+            exit(1)
+        }
         
     case "logs":
         guard args.count > 2 else {
@@ -305,6 +326,31 @@ func runDoctor() {
 }
 
 func checkCommandExists(_ command: String) -> Bool {
+    if command == "go" {
+        let standardPaths = [
+            "/opt/homebrew/bin/go",
+            "/usr/local/bin/go",
+            "/usr/local/go/bin/go",
+            "\(FileManager.default.homeDirectoryForCurrentUser.path)/go/bin/go"
+        ]
+        for path in standardPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return true
+            }
+        }
+    } else if command == "swift" {
+        let standardPaths = [
+            "/usr/bin/swift",
+            "/opt/homebrew/bin/swift",
+            "/usr/local/bin/swift"
+        ]
+        for path in standardPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return true
+            }
+        }
+    }
+
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
     task.arguments = [command]

@@ -66,7 +66,23 @@ class GUIStateManager: ObservableObject {
     @Published var configuringResolver: Bool = false
     
     @Published var selectedSidebarItem: SidebarItem? = .getStarted
-    @Published var selectedContainer: Container?
+    @Published var selectedContainerIDs = Set<String>() {
+        didSet {
+            if !selectedContainerIDs.contains(selectedContainerID ?? "") {
+                selectedContainerID = selectedContainerIDs.first
+            }
+        }
+    }
+    @Published var selectedContainerID: String?
+    
+    var selectedContainer: Container? {
+        guard let id = selectedContainerID else { return nil }
+        return containers.first(where: { $0.id == id })
+    }
+    
+    // Global App Alert Message State
+    @Published var alertMessage: String?
+    @Published var showingAlert: Bool = false
     
     private var timer: Timer?
     
@@ -100,11 +116,19 @@ class GUIStateManager: ObservableObject {
                 self.hardwareStats = stats
                 
                 // Auto-select first container if none selected
-                if self.selectedContainer == nil, let first = conts.first {
-                    self.selectedContainer = first
-                } else if let selected = self.selectedContainer {
-                    // Keep selection updated
-                    self.selectedContainer = conts.first(where: { $0.id == selected.id })
+                if self.selectedContainerID == nil, let first = conts.first {
+                    self.selectedContainerID = first.id
+                    self.selectedContainerIDs = [first.id]
+                } else if let activeID = self.selectedContainerID {
+                    if !conts.contains(where: { $0.id == activeID }) {
+                        if let first = conts.first {
+                            self.selectedContainerID = first.id
+                            self.selectedContainerIDs = [first.id]
+                        } else {
+                            self.selectedContainerID = nil
+                            self.selectedContainerIDs = []
+                        }
+                    }
                 }
             }
         }
@@ -148,7 +172,12 @@ class GUIStateManager: ObservableObject {
     }
     
     func startContainer(_ id: String) {
-        ContainerManager.shared.startContainer(id: id)
+        do {
+            try ContainerManager.shared.startContainer(id: id)
+        } catch {
+            self.alertMessage = error.localizedDescription
+            self.showingAlert = true
+        }
         refreshAll()
     }
     
@@ -158,7 +187,52 @@ class GUIStateManager: ObservableObject {
     }
     
     func createContainer(name: String, image: String, ports: String) {
-        _ = ContainerManager.shared.runNewContainer(name: name, image: image, portMap: ports)
+        do {
+            _ = try ContainerManager.shared.runNewContainer(name: name, image: image, portMap: ports)
+        } catch {
+            self.alertMessage = error.localizedDescription
+            self.showingAlert = true
+        }
+        refreshAll()
+    }
+    
+    func deleteContainer(id: String) {
+        ContainerManager.shared.removeContainer(id: id)
+        if selectedContainerID == id {
+            selectedContainerID = nil
+            selectedContainerIDs.removeAll()
+        }
+        refreshAll()
+    }
+    
+    func startSelectedContainers() {
+        var errors: [String] = []
+        for id in selectedContainerIDs {
+            do {
+                try ContainerManager.shared.startContainer(id: id)
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+        }
+        if !errors.isEmpty {
+            self.alertMessage = errors.joined(separator: "\n")
+            self.showingAlert = true
+        }
+        refreshAll()
+    }
+    
+    func stopSelectedContainers() {
+        for id in selectedContainerIDs {
+            ContainerManager.shared.stopContainer(id: id)
+        }
+        refreshAll()
+    }
+    
+    func deleteSelectedContainers() {
+        for id in selectedContainerIDs {
+            ContainerManager.shared.removeContainer(id: id)
+        }
+        self.selectedContainerIDs.removeAll()
         refreshAll()
     }
     
@@ -218,14 +292,44 @@ class GUIStateManager: ObservableObject {
     }
     
     private func checkCommandExists(_ command: String) -> Bool {
+        if command == "go" {
+            let standardPaths = [
+                "/opt/homebrew/bin/go",
+                "/usr/local/bin/go",
+                "/usr/local/go/bin/go",
+                "\(FileManager.default.homeDirectoryForCurrentUser.path)/go/bin/go"
+            ]
+            for path in standardPaths {
+                if FileManager.default.fileExists(atPath: path) {
+                    return true
+                }
+            }
+        } else if command == "swift" {
+            let standardPaths = [
+                "/usr/bin/swift",
+                "/opt/homebrew/bin/swift",
+                "/usr/local/bin/swift"
+            ]
+            for path in standardPaths {
+                if FileManager.default.fileExists(atPath: path) {
+                    return true
+                }
+            }
+        }
+        
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         task.arguments = [command]
         let pipe = Pipe()
         task.standardOutput = pipe
-        try? task.run()
-        task.waitUntilExit()
-        return task.terminationStatus == 0
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
     
     func installCommandLineTools() {
@@ -247,32 +351,37 @@ class GUIStateManager: ObservableObject {
     func installGo() {
         self.installingGo = true
         DispatchQueue.global(qos: .userInitiated).async {
-            // Attempt brew installation first
-            let brewCheck = Process()
-            brewCheck.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-            brewCheck.arguments = ["brew"]
-            try? brewCheck.run()
-            brewCheck.waitUntilExit()
+            // Attempt brew installation first by checking absolute paths directly
+            let brewPathAppleSilicon = "/opt/homebrew/bin/brew"
+            let brewPathIntel = "/usr/local/bin/brew"
             
-            if brewCheck.terminationStatus == 0 {
+            let brewPath: String?
+            if FileManager.default.fileExists(atPath: brewPathAppleSilicon) {
+                brewPath = brewPathAppleSilicon
+            } else if FileManager.default.fileExists(atPath: brewPathIntel) {
+                brewPath = brewPathIntel
+            } else {
+                brewPath = nil
+            }
+            
+            if let path = brewPath {
                 let brewInstall = Process()
-                var brewPath = "/opt/homebrew/bin/brew"
-                if !FileManager.default.fileExists(atPath: brewPath) {
-                    brewPath = "/usr/local/bin/brew"
-                }
-                brewInstall.executableURL = URL(fileURLWithPath: brewPath)
+                brewInstall.executableURL = URL(fileURLWithPath: path)
                 brewInstall.arguments = ["install", "go"]
                 try? brewInstall.run()
                 brewInstall.waitUntilExit()
             } else {
-                // Fallback: Download official Arm64 .pkg and run macOS installer with elevations
+                // Fallback: Download official Arm64 .pkg to a guaranteed writable temp folder and run macOS installer with elevations
+                let tempDir = FileManager.default.temporaryDirectory
+                let pkgURL = tempDir.appendingPathComponent("go-installer.pkg")
+                
                 let downloadTask = Process()
                 downloadTask.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-                downloadTask.arguments = ["-L", "https://dl.google.com/go/go1.22.4.darwin-arm64.pkg", "-o", "/tmp/go-installer.pkg"]
+                downloadTask.arguments = ["-L", "https://dl.google.com/go/go1.22.4.darwin-arm64.pkg", "-o", pkgURL.path]
                 try? downloadTask.run()
                 downloadTask.waitUntilExit()
                 
-                let script = "do shell script \"installer -pkg /tmp/go-installer.pkg -target /\" with administrator privileges"
+                let script = "do shell script \"installer -pkg \(pkgURL.path) -target /\" with administrator privileges"
                 let osascript = Process()
                 osascript.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
                 osascript.arguments = ["-e", script]
@@ -319,6 +428,23 @@ class GUIStateManager: ObservableObject {
         let apcDir = home.appendingPathComponent(".apc")
         try? FileManager.default.removeItem(at: apcDir)
         initializeEnvironment()
+    }
+    
+    func getContainerURL(_ cont: Container) -> URL {
+        var hostPort = 8080
+        if let portStr = cont.ports.first {
+            let parts = portStr.split(separator: ":")
+            if parts.count == 2, let parsed = Int(parts[0]) {
+                hostPort = parsed
+            } else if let parsed = Int(portStr) {
+                hostPort = parsed
+            }
+        }
+        
+        if resolverConfigured {
+            return URL(string: "http://\(cont.name).apc.local") ?? URL(string: "http://localhost:\(hostPort)")!
+        }
+        return URL(string: "http://localhost:\(hostPort)")!
     }
     
     deinit {
@@ -511,7 +637,7 @@ struct ContainersDashboardView: View {
                 }
                 .padding()
                 
-                List(state.containers, selection: $state.selectedContainer) { cont in
+                List(state.containers, selection: $state.selectedContainerIDs) { cont in
                     HStack(spacing: 12) {
                         Circle()
                             .fill(cont.state == "running" ? Color.green : Color.red)
@@ -537,52 +663,94 @@ struct ContainersDashboardView: View {
                             }
                         }
                     }
-                    .tag(cont)
+                    .tag(cont.id)
                     .padding(.vertical, 4)
+                    .contextMenu {
+                        if state.selectedContainerIDs.count > 1 {
+                            Text("\(state.selectedContainerIDs.count) Containers Selected")
+                                .font(.caption)
+                            
+                            Button(action: { state.startSelectedContainers() }) {
+                                Label("Start Selected", systemImage: "play.fill")
+                            }
+                            
+                            Button(action: { state.stopSelectedContainers() }) {
+                                Label("Stop Selected", systemImage: "stop.fill")
+                            }
+                            
+                            Divider()
+                            
+                            Button(role: .destructive, action: { state.deleteSelectedContainers() }) {
+                                Label("Delete Selected", systemImage: "trash.fill")
+                            }
+                        } else {
+                            Button(action: { state.startContainer(cont.id) }) {
+                                Label("Start", systemImage: "play.fill")
+                            }
+                            .disabled(cont.state == "running")
+                            
+                            Button(action: { state.stopContainer(cont.id) }) {
+                                Label("Stop", systemImage: "stop.fill")
+                            }
+                            .disabled(cont.state != "running")
+                            
+                            Divider()
+                            
+                            Button(role: .destructive, action: { state.deleteContainer(id: cont.id) }) {
+                                Label("Delete", systemImage: "trash.fill")
+                            }
+                        }
+                    }
                 }
             }
             .frame(minWidth: 350, maxWidth: 450)
             
-            // Container Details (Tabs: Logs, Terminal, Files, Inspect)
-            if let selected = state.selectedContainer {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Header Area
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(selected.name)
-                                .font(.title2)
-                                .fontWeight(.bold)
-                            Text("ID: \(selected.id) | Image: \(selected.image)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        
-                        // State Action buttons (OrbStack style top action headers)
-                        HStack(spacing: 8) {
-                            if selected.state == "running" {
-                                Button(action: { state.stopContainer(selected.id) }) {
-                                    Label("Stop", systemImage: "stop.fill")
-                                }
-                                .buttonStyle(.bordered)
-                                
-                                Button(action: {
-                                    state.stopContainer(selected.id)
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                        state.startContainer(selected.id)
+            // Container Details (Tabs: Logs, Terminal, Files, Inspect) - Always present to prevent HSplitView collapsing bug
+            Group {
+                if let selected = state.selectedContainer {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Header Area
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(selected.name)
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                Text("ID: \(selected.id) | Image: \(selected.image)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            
+                            // State Action buttons (OrbStack style top action headers with Delete action)
+                            HStack(spacing: 8) {
+                                if selected.state == "running" {
+                                    Button(action: { state.stopContainer(selected.id) }) {
+                                        Label("Stop", systemImage: "stop.fill")
                                     }
-                                }) {
-                                    Label("Restart", systemImage: "arrow.clockwise")
+                                    .buttonStyle(.bordered)
+                                    
+                                    Button(action: {
+                                        state.stopContainer(selected.id)
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                            state.startContainer(selected.id)
+                                        }
+                                    }) {
+                                        Label("Restart", systemImage: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(.bordered)
+                                } else {
+                                    Button(action: { state.startContainer(selected.id) }) {
+                                        Label("Start", systemImage: "play.fill")
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                }
+                                
+                                Button(role: .destructive, action: { state.deleteContainer(id: selected.id) }) {
+                                    Label("Delete", systemImage: "trash")
                                 }
                                 .buttonStyle(.bordered)
-                            } else {
-                                Button(action: { state.startContainer(selected.id) }) {
-                                    Label("Start", systemImage: "play.fill")
-                                }
-                                .buttonStyle(.borderedProminent)
                             }
                         }
-                    }
                     .padding()
                     
                     // Detail Segment Picker tabs
@@ -746,12 +914,15 @@ struct ContainersDashboardView: View {
                 .frame(minWidth: 450)
             } else {
                 ContentUnavailableView("No Container Selected", systemImage: "square.stack.3d.up", description: Text("Select a container from the list or launch a new one."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(NSColor.windowBackgroundColor))
             }
-        }
+        } // Closes Group
+        } // Closes HSplitView
         .sheet(isPresented: $showingCreateSheet) {
             CreateContainerSheet(isPresented: $showingCreateSheet)
         }
-    }
+    } // Closes body
     
     // Command prompt executor simulation
     private func executeTerminalCommand() {
