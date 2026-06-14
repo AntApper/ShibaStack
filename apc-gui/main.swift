@@ -413,18 +413,27 @@ struct MainDashboardView: View {
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(action: state.toggleVM) {
-                    Label(state.vmState == "running" ? "Stop Engine" : "Boot Engine", systemImage: state.vmState == "running" ? "stop.fill" : "play.fill")
+                    HStack {
+                        Image(systemName: state.vmState == "running" ? "stop.fill" : "play.fill")
+                        Text(state.vmState == "running" ? "Stop Engine" : "Boot Engine")
+                    }
                 }
                 .help("Boot/Shutdown Virtual Machine")
                 
                 Button(action: state.restartVM) {
-                    Label("Restart", systemImage: "arrow.clockwise")
+                    HStack {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Restart")
+                    }
                 }
                 .help("Restart ShibaStack Engine")
                 .disabled(state.vmState != "running")
                 
                 Button(action: state.pruneStorage) {
-                    Label("Prune Storage", systemImage: "sparkles")
+                    HStack {
+                        Image(systemName: "sparkles")
+                        Text("Prune Storage")
+                    }
                 }
                 .help("One-Click Disk Clean")
             }
