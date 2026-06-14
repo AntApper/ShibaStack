@@ -296,6 +296,13 @@ class GUIStateManager: ObservableObject {
         self.checkDependencies()
     }
     
+    func resetEnvironment() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let apcDir = home.appendingPathComponent(".apc")
+        try? FileManager.default.removeItem(at: apcDir)
+        initializeEnvironment()
+    }
+    
     deinit {
         timer?.invalidate()
     }
@@ -1554,6 +1561,7 @@ struct MenuBarView: View {
 // MARK: - Get Started View (Dependencies Installer & Status Board)
 struct GetStartedView: View {
     @EnvironmentObject var state: GUIStateManager
+    @State private var showingResetAlert = false
     
     var body: some View {
         ScrollView {
@@ -1613,9 +1621,47 @@ struct GetStartedView: View {
                     )
                 }
                 
+                // Clean/Reset Environment card
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Troubleshooting & Maintenance")
+                        .font(.headline)
+                    
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Reset Local Environment")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Text("Deletes all configurations, local volumes, caches, and resets ShibaStack to a clean, original state.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        
+                        Button(role: .destructive, action: { showingResetAlert = true }) {
+                            Text("Reset State")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(NSColor.gridColor), lineWidth: 1)
+                )
+                
                 Spacer()
             }
             .padding(40)
+        }
+        .alert("Reset ShibaStack?", isPresented: $showingResetAlert) {
+            Button("Reset", role: .destructive) {
+                state.resetEnvironment()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete ~/.apc/, all custom container definitions, local storage files, and reinitialize a fresh environment. This action is irreversible.")
         }
     }
 }
