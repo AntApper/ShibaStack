@@ -52,7 +52,39 @@ if [[ "$CONTAINERS" != *"test-web"* ]]; then
 	echo "FAIL: Custom container was not registered in active list."
 	exit 1
 fi
-echo "PASS: Custom container launched successfully."
+echo "PASS: Custom container launched successfully in CLI."
+
+# Loop 20 Strong Assertion: Validate command execution strictly runs INSIDE the secure guest namespace, NOT on host macOS
+echo "Asserting Guest OS Isolation..."
+if [ -f "/etc/alpine-release" ]; then
+	echo "FAIL: Environment pollution. Host Mac must not have /etc/alpine-release."
+	exit 1
+fi
+
+GUEST_RELEASE=$(/usr/local/bin/container exec test-web cat /etc/alpine-release)
+echo "Guest container alpine version: $GUEST_RELEASE"
+if [[ "$GUEST_RELEASE" != *"3."* ]]; then
+	echo "FAIL: Command did not run inside isolated Alpine container context."
+	exit 1
+fi
+echo "PASS: Dynamic guest execution isolation successfully verified."
+
+# Loop 20 Strong Assertion: Validate the local UNIX Socket Docker bridge translates real OCI containers
+echo "Asserting Docker UNIX Socket Gateway Compliance..."
+# Start apc-network helper in the background for socket testing
+./build/ShibaStack.app/Contents/Resources/bin/apc-network >/dev/null 2>&1 &
+NET_PID=$!
+sleep 1.5
+
+DOCKER_JSON=$(curl -s --unix-socket "$HOME/.apc/docker.sock" "http://localhost/containers/json")
+echo "Docker API response: $DOCKER_JSON"
+kill $NET_PID || true
+
+if [[ "$DOCKER_JSON" != *"test-web"* || "$DOCKER_JSON" != *"running"* ]]; then
+	echo "FAIL: Local UNIX socket bridge did not translate the real active OCI container."
+	exit 1
+fi
+echo "PASS: Local UNIX Socket bridge translation compliance verified."
 
 echo "--------------------------------------------------"
 echo "[4/7] Folder Sharing & Mount Point Validation"

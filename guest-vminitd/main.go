@@ -78,7 +78,7 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 				Output:  fmt.Sprintf("Container %s successfully provisioned and launched in OCI namespaces.", cmd.Name),
 			}
 		}
-		
+
 	case "exec":
 		if cmd.Name == "" {
 			resp = Response{
@@ -89,7 +89,7 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 		}
 		shellCmd := strings.Join(cmd.Cmd, " ")
 		log.Printf("[vminitd] [OCI Spine] Executing shell command inside container '%s': %s", cmd.Name, shellCmd)
-		
+
 		// Run command strictly inside the targeted secure container context to eliminate host RCE vulnerabilities
 		execCmd := exec.Command("/usr/local/bin/container", "exec", cmd.Name, "sh", "-c", shellCmd)
 		out, err := execCmd.CombinedOutput()
@@ -111,7 +111,7 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 				Output:  string(out),
 			}
 		}
-		
+
 	case "ps":
 		log.Println("[vminitd] [OCI Spine] Fetching container lists from engine...")
 		execCmd := exec.Command("/usr/local/bin/container", "list", "--format", "json")
@@ -127,7 +127,7 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 				Output:  string(out),
 			}
 		}
-		
+
 	default:
 		resp = Response{
 			Success: false,
