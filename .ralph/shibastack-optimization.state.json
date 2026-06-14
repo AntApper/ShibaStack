@@ -1,7 +1,7 @@
 {
   "name": "shibastack-optimization",
   "taskFile": ".ralph/shibastack-optimization.md",
-  "iteration": 1,
+  "iteration": 2,
   "maxIterations": 100,
   "itemsPerIteration": 0,
   "reflectEvery": 5,

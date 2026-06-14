@@ -1085,20 +1085,33 @@ struct ContainersDashboardView: View {
                             
                             Divider()
                             
-                            // Input field
-                            HStack {
-                                Text("shiba-guest:~$")
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundColor(.shibaOrange)
-                                
-                                TextField("", text: $terminalInput, onCommit: executeTerminalCommand)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .textFieldStyle(.plain)
-                                    .foregroundColor(.white)
-                                    .onSubmit(executeTerminalCommand)
+                            // Input field - only enabled when container is running
+                            if selected.state == "running" {
+                                HStack {
+                                    Text("shiba-guest:~$")
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundColor(.shibaOrange)
+                                    
+                                    TextField("", text: $terminalInput, onCommit: executeTerminalCommand)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textFieldStyle(.plain)
+                                        .foregroundColor(.white)
+                                        .onSubmit(executeTerminalCommand)
+                                }
+                                .padding(8)
+                                .background(Color.black.opacity(0.4))
+                            } else {
+                                HStack {
+                                    Image(systemName: "terminal.fill")
+                                        .foregroundColor(.secondary)
+                                    Text("Terminal offline. Please start the container to run shell commands securely inside its OCI namespace.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                }
+                                .padding(8)
+                                .background(Color.black.opacity(0.2))
                             }
-                            .padding(8)
-                            .background(Color.black.opacity(0.4))
                         }
                         .background(Color.shibaCharcoal)
                         
