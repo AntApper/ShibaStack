@@ -135,6 +135,13 @@ Optimize and expand ShibaStack to achieve feature parity with OrbStack using App
   2. **Eliminated Simulation Layers:** Completely purged the fake image pulling progressive timer, rewiring the Pull button to an asynchronous background task triggering real image pulls from Docker Hub/registries. Deleted the mock Kubernetes context manager (`K8sManager.swift`) and toggle entirely.
   3. **Closed Sandbox Security Vector:** Hardened `guest-vminitd` by routing shell terminal commands strictly inside the selected OCI container context (`container exec <id> sh -c`), completely mitigating raw host-side RCE vulnerabilities.
   4. **Warning-Free Compilation & Testing:** Cleared all compiler warnings and successfully ran both un-mocked E2E integration and AppleScript GUI test suites with 100% passes.
+- **2026-06-14 (Loop 18):** Hardened interactive shell terminal security:
+  1. **Dynamic Shell State Overlay:** Modified `apc-gui/main.swift` to dynamically bind the terminal's input availability to the targeted container's active `state`.
+  2. **Disabled Stopped Execution:** If the container is stopped or offline, the UI now renders an honest grayed-out offline overlay, disabling command inputs to ensure commands are only securely issued inside active, running OCI namespaces.
+- **2026-06-14 (Loop 19):** Dynamically bridged local Docker UNIX socket server:
+  1. **Real-time Client Mapping:** Re-engineered the Go-based user-space networking gateway (`apc-network/main.go`) to dynamically invoke `/usr/local/bin/container` in JSON format.
+  2. **Standard Docker API Compliance:** Translates and structures running container formats (`GET /containers/json`) and local images lists (`GET /images/json`) on-the-fly, enabling standard Mac `docker` CLI clients to interact natively with ShibaStack.
+  3. **Verified E2E Connectivity:** Verified curl queries over the Unix socket (`~/.apc/docker.sock`) successfully resolving and displaying active container details dynamically.
 
 ## Reflection Checkpoint (Loop 10/100)
 
