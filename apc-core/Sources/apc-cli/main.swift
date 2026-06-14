@@ -28,6 +28,7 @@ Core Commands:
   prune                     Perform a one-click disk and unused volume clean
   doctor                    Perform system diagnostic check of dependencies
   config                    Manage persistent VM resource allocations
+  volume                    Manage persistent storage volumes
 
 Hardware & Network Commands:
   usb list                  Scan and list connected host USB devices
@@ -55,43 +56,116 @@ func main() {
     case "doctor":
         runDoctor()
         
+    case "volume":
+        guard args.count > 2 else {
+            print("""
+Usage:
+  apc volume list                  List all volumes
+  apc volume create <name> <path>  Create a new persistent volume
+  apc volume rm <name>             Delete an inactive volume
+""")
+            exit(1)
+        }
+        let subCommand = args[2].lowercased()
+        switch subCommand {
+        case "list", "ls":
+            let volList = containerManager.getVolumes()
+            print("\(pad("VOLUME NAME", toWidth: 24)) \(pad("SIZE", toWidth: 16)) \(pad("MOUNT POINT", toWidth: 32))")
+            print(String(repeating: "-", count: 72))
+            for vol in volList {
+                print("\(pad(vol.name, toWidth: 24)) \(pad(vol.size, toWidth: 16)) \(pad(vol.mountPoint, toWidth: 32))")
+            }
+        case "create":
+            guard args.count > 4 else {
+                print("Error: Missing volume name or mount point.")
+                print("Usage: apc volume create <name> <mount_point>")
+                exit(1)
+            }
+            let name = args[3]
+            let mountPoint = args[4]
+            do {
+                // Trigger dynamic volume creation inside container registry
+                try containerManager.createVolume(name: name, mountPoint: mountPoint)
+                print("Successfully created volume: \(name)")
+            } catch {
+                print("Failed to create volume: \(error.localizedDescription)")
+                exit(1)
+            }
+        case "rm":
+            guard args.count > 3 else {
+                print("Error: Missing volume name.")
+                print("Usage: apc volume rm <name>")
+                exit(1)
+            }
+            let name = args[3]
+            do {
+                try containerManager.removeVolume(id: name)
+                print("Successfully removed volume: \(name)")
+            } catch {
+                print("Failed to remove volume: \(error.localizedDescription)")
+                exit(1)
+            }
+        default:
+            print("Unknown volume command: \(subCommand)")
+            exit(1)
+        }
+        
     case "config":
         guard args.count > 2 else {
             let config = vmManager.loadVMConfig()
             print("--- ShibaStack Virtual Machine Allocation Configuration ---")
-            print("  CPU Allocation   : \(config.allocatedCPUs) Cores")
-            print("  Memory Allocation: \(config.allocatedMemoryGB) GB")
+            print("  CPU Allocation     : \(config.allocatedCPUs) Cores")
+            print("  Memory Allocation  : \(config.allocatedMemoryGB) GB")
+            print("  Rosetta 2 Emulation: \(config.enableRosetta ? "Enabled" : "Disabled")")
             print("")
             print("Usage:")
-            print("  apc config set cpu <count>     (Set allocated CPU cores)")
-            print("  apc config set memory <gb>     (Set allocated memory in GB)")
+            print("  apc config set cpu <count>          (Set allocated CPU cores)")
+            print("  apc config set memory <gb>          (Set allocated memory in GB)")
+            print("  apc config set rosetta <true|false> (Enable/Disable Rosetta 2 Emulation)")
             exit(0)
         }
         let subCommand = args[2].lowercased()
         if subCommand == "set" {
             guard args.count > 4 else {
                 print("Error: Missing key and value.")
-                print("Usage: apc config set <cpu|memory> <value>")
+                print("Usage: apc config set <cpu|memory|rosetta> <value>")
                 exit(1)
             }
             let key = args[3].lowercased()
-            let valStr = args[4]
-            guard let val = Int(valStr) else {
-                print("Error: Value must be an integer.")
-                exit(1)
-            }
+            let valStr = args[4].lowercased()
             
             var currentConfig = vmManager.loadVMConfig()
             if key == "cpu" {
+                guard let val = Int(valStr) else {
+                    print("Error: Value must be an integer.")
+                    exit(1)
+                }
                 currentConfig.allocatedCPUs = val
                 vmManager.saveVMConfig(currentConfig)
                 print("Successfully updated CPU allocation to \(val) cores. (Restart ShibaStack to apply changes)")
             } else if key == "memory" {
+                guard let val = Int(valStr) else {
+                    print("Error: Value must be an integer.")
+                    exit(1)
+                }
                 currentConfig.allocatedMemoryGB = val
                 vmManager.saveVMConfig(currentConfig)
                 print("Successfully updated Memory allocation to \(val) GB. (Restart ShibaStack to apply changes)")
+            } else if key == "rosetta" {
+                let val: Bool
+                if valStr == "true" || valStr == "1" || valStr == "yes" {
+                    val = true
+                } else if valStr == "false" || valStr == "0" || valStr == "no" {
+                    val = false
+                } else {
+                    print("Error: Value for rosetta must be true or false.")
+                    exit(1)
+                }
+                currentConfig.enableRosetta = val
+                vmManager.saveVMConfig(currentConfig)
+                print("Successfully updated Rosetta 2 Emulation to \(val ? "Enabled" : "Disabled"). (Restart ShibaStack to apply changes)")
             } else {
-                print("Error: Unknown configuration key '\(key)'. Supported: cpu, memory")
+                print("Error: Unknown configuration key '\(key)'. Supported: cpu, memory, rosetta")
                 exit(1)
             }
         } else {
@@ -278,7 +352,7 @@ func main() {
 
 func runDoctor() {
     print("--------------------------------------------------")
-    print("🐕 ShibaStack: Apple Private Container (APC) Doctor")
+    print("ShibaStack: Apple Private Container (APC) Doctor")
     print("--------------------------------------------------")
     print("Checking system dependencies and environment:")
     

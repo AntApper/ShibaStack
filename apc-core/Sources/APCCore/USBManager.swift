@@ -17,53 +17,51 @@ public final class USBManager {
     /// Scans connected USB devices on the host Mac using IOKit.
     public func scanDevices() -> [USBDevice] {
         var devices: [USBDevice] = []
+        let matchClasses = ["IOUSBHostDevice", "IOUSBDevice"]
         
-        // Match standard USB devices
-        guard let matchingDict = IOServiceMatching("IOUSBDevice") else {
-            return getFallbackDevices()
-        }
-        
-        var iterator: io_iterator_t = 0
-        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
-        if kr != KERN_SUCCESS {
-            return getFallbackDevices()
-        }
-        
-        defer {
-            IOObjectRelease(iterator)
-        }
-        
-        while case let service = IOIteratorNext(iterator), service != IO_OBJECT_NULL {
-            defer { IOObjectRelease(service) }
-            
-            let name = getRegistryString(service, key: "USB Product Name") ?? getRegistryString(service, key: "ioBundleIdentifier") ?? "Unknown USB Device"
-            let vendorIdNum = getRegistryInt(service, key: "idVendor") ?? 0
-            let productIdNum = getRegistryInt(service, key: "idProduct") ?? 0
-            let serial = getRegistryString(service, key: "USB Serial Number") ?? "N/A"
-            
-            let vendorId = String(format: "0x%04X", vendorIdNum)
-            let productId = String(format: "0x%04X", productIdNum)
-            
-            // Skip root hubs or empty-named controllers to focus on actual accessories
-            if name.contains("Root Hub") || name.contains("Controller") || vendorIdNum == 0 {
+        for matchClass in matchClasses {
+            guard let matchingDict = IOServiceMatching(matchClass) else {
                 continue
             }
             
-            let deviceId = "\(vendorId):\(productId):\(serial)"
-            let isAttached = attachedDevices.contains(deviceId)
+            var iterator: io_iterator_t = 0
+            let kr = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
+            if kr != KERN_SUCCESS {
+                continue
+            }
             
-            devices.append(USBDevice(
-                name: name,
-                vendorId: vendorId,
-                productId: productId,
-                serialNumber: serial,
-                isAttached: isAttached
-            ))
-        }
-        
-        // If no devices were found via IOKit (e.g. inside a restricted environment), use high-quality fallback devices
-        if devices.isEmpty {
-            return getFallbackDevices()
+            while case let service = IOIteratorNext(iterator), service != IO_OBJECT_NULL {
+                defer { IOObjectRelease(service) }
+                
+                let name = getRegistryString(service, key: "USB Product Name") ?? getRegistryString(service, key: "ioBundleIdentifier") ?? getRegistryString(service, key: "productName") ?? "Unknown USB Device"
+                let vendorIdNum = getRegistryInt(service, key: "idVendor") ?? 0
+                let productIdNum = getRegistryInt(service, key: "idProduct") ?? 0
+                let serial = getRegistryString(service, key: "USB Serial Number") ?? getRegistryString(service, key: "serialNumber") ?? "N/A"
+                
+                let vendorId = String(format: "0x%04X", vendorIdNum)
+                let productId = String(format: "0x%04X", productIdNum)
+                
+                // Skip root hubs or empty-named controllers to focus on actual accessories
+                if name.contains("Root Hub") || name.contains("Controller") || vendorIdNum == 0 {
+                    continue
+                }
+                
+                let deviceId = "\(vendorId):\(productId):\(serial)"
+                if devices.contains(where: { $0.id == deviceId }) {
+                    continue
+                }
+                
+                let isAttached = attachedDevices.contains(deviceId)
+                
+                devices.append(USBDevice(
+                    name: name,
+                    vendorId: vendorId,
+                    productId: productId,
+                    serialNumber: serial,
+                    isAttached: isAttached
+                ))
+            }
+            IOObjectRelease(iterator)
         }
         
         return devices
@@ -149,6 +147,7 @@ public final class USBManager {
     
     // Helper to extract registry string properties
     private func getRegistryString(_ service: io_service_t, key: String) -> String? {
+        guard service != IO_OBJECT_NULL else { return nil }
         if let prop = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0) {
             return prop.takeRetainedValue() as? String
         }
@@ -157,31 +156,12 @@ public final class USBManager {
     
     // Helper to extract registry integer properties
     private func getRegistryInt(_ service: io_service_t, key: String) -> Int? {
+        guard service != IO_OBJECT_NULL else { return nil }
         if let prop = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0) {
             if let num = prop.takeRetainedValue() as? NSNumber {
                 return num.intValue
             }
         }
         return nil
-    }
-    
-    // High-quality mock devices for local testing or CI validation
-    private func getFallbackDevices() -> [USBDevice] {
-        let mockData = [
-            ("YubiKey 5C NFC", "0x1050", "0x0407", "YUBI9876543"),
-            ("Apple USB SuperDrive", "0x05AC", "0x1500", "SD-00998811"),
-            ("Crucial X8 Portable SSD", "0x0634", "0x5601", "SSD-CRU-77A3")
-        ]
-        
-        return mockData.map { (name, vendor, product, serial) in
-            let id = "\(vendor):\(product):\(serial)"
-            return USBDevice(
-                name: name,
-                vendorId: vendor,
-                productId: product,
-                serialNumber: serial,
-                isAttached: attachedDevices.contains(id)
-            )
-        }
     }
 }

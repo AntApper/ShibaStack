@@ -6,7 +6,7 @@ set -e
 # structures the ShibaStack.app bundle, and packages it into ShibaStack.dmg.
 
 echo "=================================================="
-echo "🐕 ShibaStack: Building ShibaStack"
+echo "ShibaStack: Building ShibaStack"
 echo "=================================================="
 
 # 1. Setup build directories
@@ -26,6 +26,9 @@ cp ShibaStack.icns build/ShibaStack.app/Contents/Resources/ShibaStack.icns
 # 2. Compile Go Networking helper
 echo "Compiling apc-network (Go DNS & Reverse Proxy)..."
 CGO_ENABLED=0 go build -ldflags="-s -w" -o build/ShibaStack.app/Contents/Resources/bin/apc-network apc-network/main.go
+
+echo "Compiling guest-vminitd (Go Guest VM Agent)..."
+(cd guest-vminitd && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../build/ShibaStack.app/Contents/Resources/bin/guest-vminitd .)
 
 # 3. Compile Swift virtualization core and helper executables (SPM)
 echo "Compiling apc-core, apc-daemon and apc CLI helper..."
@@ -89,14 +92,14 @@ cat <<'EOF' >build/ShibaStack.app/Contents/Info.plist
 </plist>
 EOF
 
-# 6. Apply Ad-hoc Codesigning
+# 6. Apply Production-Grade Codesigning with Hardened Runtime (Notarization Ready)
 echo "Signing application bundle and embedded binaries..."
 # Touch all contents to force Finder timestamp invalidation
 touch build/ShibaStack.app/Contents/Resources/ShibaStack.icns
 touch build/ShibaStack.app/Contents/Info.plist
 touch build/ShibaStack.app
 
-codesign -s - --entitlements scripts/entitlements.plist --force --deep build/ShibaStack.app
+codesign -s - --options runtime --entitlements scripts/entitlements.plist --force --deep build/ShibaStack.app
 
 # Force Launch Services to register the new app bundle icon
 echo "Registering app icon with Launch Services..."

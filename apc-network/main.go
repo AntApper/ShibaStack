@@ -54,6 +54,9 @@ func main() {
 	// Start DNS Server (UDP port 15353)
 	go startDNSServer()
 
+	// Start Docker CLI Bridge (UNIX socket)
+	go startDockerBridge()
+
 	// Start HTTP Reverse Proxy (TCP port 8080 with attempt on 80)
 	startHTTPProxy()
 }
@@ -94,9 +97,17 @@ func loadRoutes() {
 }
 
 func watchConfig() {
+	var lastModTime time.Time
 	for {
-		time.Sleep(2 * time.Second)
-		loadRoutes()
+		time.Sleep(1 * time.Second)
+		info, err := os.Stat(configPath)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(lastModTime) {
+			lastModTime = info.ModTime()
+			loadRoutes()
+		}
 	}
 }
 
@@ -217,7 +228,7 @@ func handleDNSQuery(conn *net.UDPConn, buf []byte, n int, raddr *net.UDPAddr) {
 
 	// Append Answer Section (A Record pointing to 127.0.0.1)
 	// Name pointer (offset pointing to the name in the question section, usually 0xc00c)
-	response = append(response, 0xc, 0x0c)
+	response = append(response, 0xc0, 0x0c)
 	// Type A (0x0001), Class IN (0x0001)
 	response = append(response, 0x00, 0x01, 0x00, 0x01)
 	// TTL (30 seconds)
@@ -322,6 +333,20 @@ func startHTTPProxy() {
 			fmt.Fprintf(w, "APC Proxy Gateway Error: Loopback routing loop detected. Host %q maps directly to proxy listening port %d.\n", host, port)
 			return
 		}
+
+		// Multi-hop routing loop guard using custom headers
+		hopStr := r.Header.Get("X-APC-Forwarded-Hops")
+		hops := 0
+		if hopStr != "" {
+			fmt.Sscanf(hopStr, "%d", &hops)
+		}
+		if hops >= 10 {
+			w.WriteHeader(http.StatusLoopDetected) // 508 Loop Detected
+			fmt.Fprintf(w, "APC Proxy Gateway Error: Maximum forwarding hops (10) exceeded. Possible routing loop among guest containers.\n")
+			return
+		}
+		r.Header.Set("X-APC-Forwarded-Hops", fmt.Sprintf("%d", hops+1))
+
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -348,4 +373,243 @@ func singleJoiningSlash(a, b string) string {
 		return a + "/" + b
 	}
 	return a + b
+}
+
+// MARK: - Docker CLI Socket Bridge & Translation API
+
+type DockerPort struct {
+	IP          string `json:"IP,omitempty"`
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort,omitempty"`
+	Type        string `json:"Type"`
+}
+
+type DockerContainer struct {
+	ID     string       `json:"Id"`
+	Names  []string     `json:"Names"`
+	Image  string       `json:"Image"`
+	State  string       `json:"State"`
+	Status string       `json:"Status"`
+	Ports  []DockerPort `json:"Ports"`
+}
+
+type DockerImage struct {
+	ID          string   `json:"Id"`
+	RepoTags    []string `json:"RepoTags"`
+	Size        int64    `json:"Size"`
+	VirtualSize int64    `json:"VirtualSize"`
+}
+
+func startDockerBridge() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("Error getting user home dir: %v", err)
+		return
+	}
+	sockPath := filepath.Join(home, ".apc", "docker.sock")
+
+	// Ensure old socket is cleanly removed
+	_ = os.Remove(sockPath)
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		log.Printf("[docker-bridge] Failed to listen on Unix socket %s: %v", sockPath, err)
+		return
+	}
+	defer listener.Close()
+
+	log.Printf("[docker-bridge] Server listening on UNIX socket: unix://%s", sockPath)
+
+	mux := http.NewServeMux()
+
+	// Implement Standard Docker Client Handshake and Ping endpoints
+	mux.HandleFunc("/_ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	mux.HandleFunc("/v1.43/_ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	// Catch-all Docker API versioning gateway
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		log.Printf("[docker-bridge] HTTP API Query: %s %s", r.Method, path)
+
+		if strings.HasSuffix(path, "/_ping") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+
+		if strings.HasSuffix(path, "/containers/json") {
+			handleContainersJSON(w, r)
+			return
+		}
+
+		if strings.HasSuffix(path, "/images/json") {
+			handleImagesJSON(w, r)
+			return
+		}
+
+		// Fallback empty array to avoid Docker client crash/block
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	})
+
+	server := &http.Server{
+		Handler: mux,
+	}
+
+	if err := server.Serve(listener); err != nil {
+		log.Printf("[docker-bridge] Server terminated: %v", err)
+	}
+}
+
+func handleContainersJSON(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	contsPath := filepath.Join(home, ".apc", "containers.json")
+
+	file, err := os.Open(contsPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+	defer file.Close()
+
+	type LocalContainer struct {
+		ID    string   `json:"id"`
+		Name  string   `json:"name"`
+		Image string   `json:"image"`
+		State string   `json:"state"`
+		Ports []string `json:"ports"`
+	}
+
+	var localConts []LocalContainer
+	if err := json.NewDecoder(file).Decode(&localConts); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+
+	dockerConts := make([]DockerContainer, 0, len(localConts))
+	for _, c := range localConts {
+		dockerPorts := []DockerPort{}
+		for _, pStr := range c.Ports {
+			var pub, priv int
+			_, err := fmt.Sscanf(pStr, "%d:%d", &pub, &priv)
+			if err != nil {
+				_, err = fmt.Sscanf(pStr, "%d", &priv)
+				pub = priv
+			}
+			dockerPorts = append(dockerPorts, DockerPort{
+				IP:          "0.0.0.0",
+				PrivatePort: priv,
+				PublicPort:  pub,
+				Type:        "tcp",
+			})
+		}
+
+		statusStr := "Stopped"
+		if c.State == "running" {
+			statusStr = "Up 15 minutes"
+		}
+
+		dockerConts = append(dockerConts, DockerContainer{
+			ID:     c.ID,
+			Names:  []string{"/" + c.Name},
+			Image:  c.Image,
+			State:  c.State,
+			Status: statusStr,
+			Ports:  dockerPorts,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(dockerConts)
+}
+
+func handleImagesJSON(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	imgsPath := filepath.Join(home, ".apc", "images.json")
+
+	file, err := os.Open(imgsPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+	defer file.Close()
+
+	type LocalImage struct {
+		ID         string `json:"id"`
+		Repository string `json:"repository"`
+		Tag        string `json:"tag"`
+		Size       string `json:"size"`
+	}
+
+	var localImgs []LocalImage
+	if err := json.NewDecoder(file).Decode(&localImgs); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+
+	dockerImgs := make([]DockerImage, 0, len(localImgs))
+	for _, img := range localImgs {
+		sizeBytes := parseSizeToBytes(img.Size)
+		repoTag := img.Repository + ":" + img.Tag
+
+		dockerImgs = append(dockerImgs, DockerImage{
+			ID:          img.ID,
+			RepoTags:    []string{repoTag},
+			Size:        sizeBytes,
+			VirtualSize: sizeBytes,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(dockerImgs)
+}
+
+func parseSizeToBytes(sizeStr string) int64 {
+	var val float64
+	var unit string
+	_, err := fmt.Sscanf(sizeStr, "%f %s", &val, &unit)
+	if err != nil {
+		return 10 * 1024 * 1024
+	}
+	switch strings.ToUpper(unit) {
+	case "KB":
+		return int64(val * 1024)
+	case "MB":
+		return int64(val * 1024 * 1024)
+	case "GB":
+		return int64(val * 1024 * 1024 * 1024)
+	default:
+		return int64(val)
+	}
 }

@@ -83,9 +83,24 @@ public struct APCHardwareStats: Codable {
 public struct VMConfig: Codable, Hashable {
     public var allocatedCPUs: Int
     public var allocatedMemoryGB: Int
+    public var enableRosetta: Bool
     
-    public init(allocatedCPUs: Int, allocatedMemoryGB: Int) {
+    public init(allocatedCPUs: Int, allocatedMemoryGB: Int, enableRosetta: Bool = true) {
         self.allocatedCPUs = allocatedCPUs
         self.allocatedMemoryGB = allocatedMemoryGB
+        self.enableRosetta = enableRosetta
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case allocatedCPUs
+        case allocatedMemoryGB
+        case enableRosetta
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allocatedCPUs = try container.decode(Int.self, forKey: .allocatedCPUs)
+        allocatedMemoryGB = try container.decode(Int.self, forKey: .allocatedMemoryGB)
+        enableRosetta = try container.decodeIfPresent(Bool.self, forKey: .enableRosetta) ?? true
     }
 }

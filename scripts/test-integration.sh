@@ -39,8 +39,11 @@ echo "PASS: Virtualization engine booted successfully."
 
 echo "--------------------------------------------------"
 echo "[3/7] Container Provisioning & Run"
-# Spin up a custom test container using port 8081 to avoid collision with running web-app on port 80
-$APC_CLI run test-web alpine-nginx 8081:8080
+# Pre-clean test container if it already exists from a previous crash
+$APC_CLI rm test-web 2>/dev/null || true
+
+# Spin up a custom test container using port 8085 to avoid collision with running web-app on port 80 and it-tools on port 8081
+$APC_CLI run test-web alpine-nginx 8085:8080
 
 # Verify container was created and listed
 CONTAINERS=$($APC_CLI ps)
@@ -68,6 +71,13 @@ if [ ! -f "$ROUTING_FILE" ]; then
 	echo "FAIL: Routing JSON was not generated at $ROUTING_FILE"
 	exit 1
 fi
+
+# Assert: Validate routing file is syntax-valid JSON
+if ! python3 -m json.tool "$ROUTING_FILE" >/dev/null; then
+	echo "FAIL: Routing file $ROUTING_FILE is not valid JSON."
+	exit 1
+fi
+echo "PASS: Routing database syntax is valid JSON."
 
 echo "Routing table contents:"
 cat "$ROUTING_FILE"
@@ -117,6 +127,16 @@ echo "PASS: persistent hypervisor configs and diagnostic suite verified."
 # Clean up test container
 echo "--------------------------------------------------"
 echo "Teardown: Stopping VM and cleaning container registry"
+$APC_CLI rm test-web 2>/dev/null || true
+
+# Assert: Verify that the container was deleted from active registries
+PS_OUTPUT=$($APC_CLI ps)
+if [[ "$PS_OUTPUT" == *"test-web"* ]]; then
+	echo "FAIL: test-web container was not deleted from active registry after 'apc rm' command."
+	exit 1
+fi
+echo "PASS: CLI container removal verified."
+
 $APC_CLI stop
 
 echo "=================================================="

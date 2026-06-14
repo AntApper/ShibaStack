@@ -47,31 +47,7 @@ public final class ContainerManager {
            let list = try? decoder.decode([Container].self, from: data) {
             self.containers = list
         } else {
-            // Load default containers
-            containers = [
-                Container(id: "c_alpine_web", name: "web-app", image: "alpine-nginx:3.18", state: "running", ports: ["80:8080"], cpuUsage: 0.8, memoryUsage: 42.1, logs: [
-                    "2026-06-14 10:00:01 [info] Starting nginx/1.25.1",
-                    "2026-06-14 10:00:02 [info] Listening on port 8080",
-                    "2026-06-14 10:00:05 [info] Ready to serve HTTP traffic",
-                    "2026-06-14 10:01:23 [info] GET / index.html 200 OK - Mozilla/5.0"
-                ]),
-                Container(id: "c_alpine_it_tools", name: "it-tools", image: "corentinth/it-tools:latest", state: "running", ports: ["8081:80"], cpuUsage: 0.5, memoryUsage: 54.3, logs: [
-                    "2026-06-14 11:15:00 [info] Starting IT-Tools server...",
-                    "2026-06-14 11:15:01 [info] Listening on HTTP port 80",
-                    "2026-06-14 11:15:03 [info] Ready to serve developer toolbox."
-                ]),
-                Container(id: "c_alpine_db", name: "postgres-db", image: "alpine-postgres:15", state: "running", ports: ["5432:5432"], cpuUsage: 0.4, memoryUsage: 112.5, logs: [
-                    "2026-06-14 10:00:01 [info] Database system is ready to accept connections",
-                    "2026-06-14 10:00:01 [info] listening on IPv4 address 0.0.0.0, port 5432",
-                    "2026-06-14 10:10:45 [info] Autovacuum launcher started"
-                ]),
-                Container(id: "c_alpine_redis", name: "redis-cache", image: "alpine-redis:7.0", state: "stopped", ports: ["6379:6379"], cpuUsage: 0.0, memoryUsage: 0.0, logs: [
-                    "2026-06-14 09:12:00 [info] Redis version=7.0.11, bits=64",
-                    "2026-06-14 09:12:00 [warning] Warning: 32bit synthesis overridden",
-                    "2026-06-14 09:12:01 [info] Server initialized",
-                    "2026-06-14 09:30:00 [info] Connection closed by daemon"
-                ])
-            ]
+            self.containers = []
         }
         
         // Try loading images
@@ -79,14 +55,7 @@ public final class ContainerManager {
            let list = try? decoder.decode([ContainerImage].self, from: data) {
             self.images = list
         } else {
-            // Load default images
-            images = [
-                ContainerImage(id: "img_it_tools", repository: "corentinth/it-tools", tag: "latest", size: "48.2 MB", created: "1 day ago"),
-                ContainerImage(id: "img_nginx", repository: "alpine-nginx", tag: "3.18", size: "18.4 MB", created: "2 days ago"),
-                ContainerImage(id: "img_postgres", repository: "alpine-postgres", tag: "15", size: "124.2 MB", created: "1 week ago"),
-                ContainerImage(id: "img_redis", repository: "alpine-redis", tag: "7.0", size: "32.1 MB", created: "3 weeks ago"),
-                ContainerImage(id: "img_alpine_base", repository: "alpine", tag: "latest", size: "7.5 MB", created: "1 month ago")
-            ]
+            self.images = []
         }
         
         // Try loading volumes
@@ -94,12 +63,7 @@ public final class ContainerManager {
            let list = try? decoder.decode([Volume].self, from: data) {
             self.volumes = list
         } else {
-            // Load default volumes
-            volumes = [
-                Volume(name: "postgres_data", size: "154.2 MB", mountPoint: "/var/lib/postgresql/data"),
-                Volume(name: "redis_data", size: "1.2 MB", mountPoint: "/data"),
-                Volume(name: "nginx_logs", size: "0.4 MB", mountPoint: "/var/log/nginx")
-            ]
+            self.volumes = []
         }
         
         // Sync & Save
@@ -236,6 +200,24 @@ public final class ContainerManager {
     
     public func getVolumes() -> [Volume] {
         return volumes
+    }
+    
+    // Creates a new persistent storage volume inside the registry.
+    public func createVolume(name: String, mountPoint: String) throws {
+        if volumes.contains(where: { $0.name == name }) {
+            throw NSError(domain: "ContainerManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Volume '\(name)' already exists."])
+        }
+        let newVolume = Volume(name: name, size: "0.0 MB", mountPoint: mountPoint)
+        volumes.append(newVolume)
+        saveState()
+    }
+    
+    public func removeVolume(id: String) throws {
+        if !volumes.contains(where: { $0.id == id }) {
+            throw NSError(domain: "ContainerManager", code: 4, userInfo: [NSLocalizedDescriptionKey: "Volume '\(id)' not found."])
+        }
+        volumes.removeAll { $0.id == id }
+        saveState()
     }
     
     public func pruneVolumes() {

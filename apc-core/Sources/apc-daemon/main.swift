@@ -2,7 +2,7 @@ import Foundation
 import APCCore
 
 print("--------------------------------------------------")
-print("🐕 ShibaStack: Apple Private Container (APC) Daemon")
+print("ShibaStack: Apple Private Container (APC) Daemon")
 print("--------------------------------------------------")
 print("Initializing APC virtualization components...")
 
@@ -24,6 +24,12 @@ do {
     print("\nRunning containers:")
     for cont in containerManager.getContainers() {
         print("  - \(cont.name) (\(cont.image)) Status: \(cont.state) Ports: \(cont.ports.joined(separator: ", "))")
+    }
+    
+    // Start the Host Command Dispatcher over VSOCK on port 1024
+    print("\n[APC-Daemon] Binding Host-Guest VSOCK command listener on port 1024...")
+    VSOCKManager.shared.registerListener(onPort: 1024, vm: vmManager.getUnderlyingVM()) { fd in
+        print("[APC-Daemon] Accepted connection from guest agent (fd: \(fd)). Ready for command routing.")
     }
     
     print("\nPress Ctrl+C to terminate the APC daemon.")

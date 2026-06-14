@@ -79,12 +79,13 @@ To prevent infinite request amplification loops where the proxy requests traffic
 
 ---
 
-## 3. Communication Protocols & VSOCK
+## 3. Communication Protocols & VSOCK (Guest Execution Spine)
 
 For low-level hypervisor-to-guest communications, APC utilizes `VZVirtioSocketConnection` (VSOCK).
-- The host opens a listening VSOCK socket on a designated port.
-- A daemon (`vminitd`) running inside the Alpine guest connects to the host socket.
-- This secure channel is utilized to forward terminal inputs, exchange statistics, and trigger container launches without opening standard network ports to external interfaces.
+- **Socket Listener:** The host opens a listening VSOCK socket on a designated port (such as `1024`).
+- **Guest Daemon (`guest-vminitd`):** A platform-isolated daemon compiled in Go runs inside the Alpine guest and establishes a connection handshake to the host's CID (`2`) over native Linux `AF_VSOCK` socket interfaces.
+- **Mock Loopback Bridge:** To ensure robust local developments and CI test passes on macOS where real virtualization configurations might be restricted, `VSOCKManager` sets up a mock loopback fallback. A host-side TCP listener on port `10124` handles loopback connection handshakes from `guest-vminitd` running in the background.
+- **Real-Time Command Dispatch (PTY Console):** When a developer inputs commands inside the interactive terminal, they are serialized to JSON payloads containing the executable action (`exec`) and commands. The guest daemon parses these payloads, executes the requested command natively via the underlying operating system shell (`sh -c "<command>"`), and streams combined stdout/stderr output back over the socket tunnel to render in real-time in the GUI console.
 
 ---
 

@@ -12,3 +12,7 @@ ShibaStack.dmg
 
 # User local testing cache
 .apc/
+
+# Compiled GUI binary
+apc-gui/APC-GUI
+
