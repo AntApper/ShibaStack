@@ -880,17 +880,69 @@ struct CreateContainerSheet: View {
     @State private var image = "alpine"
     @State private var ports = "80:8080"
     
+    // Validation messages
+    @State private var nameError: String? = nil
+    @State private var portError: String? = nil
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Launch New Container")
-                .font(.headline)
+                .font(.title2)
+                .fontWeight(.bold)
             
-            Form {
-                TextField("Container Name:", text: $name)
-                TextField("Image Tag:", text: $image)
-                TextField("Port Forwarding (host:container):", text: $ports)
+            VStack(alignment: .leading, spacing: 14) {
+                // Name input
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Container Name:")
+                        .font(.headline)
+                    TextField("e.g. web-server, postgres-db", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: name) { _, newValue in
+                            validateName(newValue)
+                        }
+                    
+                    if let err = nameError {
+                        Text(err)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    } else {
+                        Text("Only alphanumeric characters, dashes, and underscores allowed.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                // Image input
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Image Tag:")
+                        .font(.headline)
+                    TextField("e.g. alpine:latest, nginx:3.18", text: $image)
+                        .textFieldStyle(.roundedBorder)
+                }
+                
+                // Port mapping input
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Port Forwarding (host_port:container_port):")
+                        .font(.headline)
+                    TextField("e.g. 80:8080, 5432:5432", text: $ports)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: ports) { _, newValue in
+                            validatePorts(newValue)
+                        }
+                    
+                    if let err = portError {
+                        Text(err)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    } else {
+                        Text("Exposes guest services to local localhost ports.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
-            .textFieldStyle(.roundedBorder)
+            
+            Spacer()
             
             HStack {
                 Spacer()
@@ -900,15 +952,51 @@ struct CreateContainerSheet: View {
                 .buttonStyle(.bordered)
                 
                 Button("Run") {
-                    guard !name.isEmpty && !image.isEmpty else { return }
+                    guard !name.isEmpty && !image.isEmpty && nameError == nil && portError == nil else { return }
                     state.createContainer(name: name, image: image, ports: ports)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(name.isEmpty || image.isEmpty || nameError != nil || portError != nil)
             }
         }
         .padding()
-        .frame(width: 380, height: 240)
+        .frame(width: 420, height: 380)
+    }
+    
+    private func validateName(_ value: String) {
+        if value.isEmpty {
+            nameError = "Container name cannot be empty."
+            return
+        }
+        
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        if value.unicodeScalars.first(where: { !allowed.contains($0) }) != nil {
+            nameError = "Invalid characters. Use alphanumeric, dashes, and underscores only."
+        } else {
+            nameError = nil
+        }
+    }
+    
+    private func validatePorts(_ value: String) {
+        if value.isEmpty {
+            portError = nil
+            return
+        }
+        
+        let parts = value.split(separator: ":")
+        if parts.count != 2 {
+            portError = "Ports must be in the format 'host_port:container_port'."
+            return
+        }
+        
+        guard let hostPort = Int(parts[0]), let guestPort = Int(parts[1]),
+              hostPort > 0 && hostPort < 65536, guestPort > 0 && guestPort < 65536 else {
+            portError = "Ports must be valid integers between 1 and 65535."
+            return
+        }
+        
+        portError = nil
     }
 }
 
