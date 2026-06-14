@@ -204,6 +204,7 @@ class GUIStateManager: ObservableObject {
     @Published var configuringResolver: Bool = false
     @Published var downloadingKernels: Bool = false
     @Published var installingAppleContainer: Bool = false
+    @Published var isPullingImage: Bool = false
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
     @Published var selectedContainerIDs = Set<String>() {
@@ -223,7 +224,6 @@ class GUIStateManager: ObservableObject {
     // Global App Alert Message State
     @Published var alertMessage: String?
     @Published var showingAlert: Bool = false
-    @Published var enableK8s: Bool = false
     
     private var timer: Timer?
     
@@ -299,23 +299,6 @@ class GUIStateManager: ObservableObject {
             try? VMManager.shared.startVM()
             refreshAll()
         }
-    }
-    
-    func toggleK8s(enabled: Bool) {
-        do {
-            if enabled {
-                try K8sManager.shared.enableK8sContext()
-                self.enableK8s = true
-            } else {
-                try K8sManager.shared.disableK8sContext()
-                self.enableK8s = false
-            }
-        } catch {
-            self.alertMessage = "K8s Config Error: \(error.localizedDescription)"
-            self.showingAlert = true
-            self.enableK8s = false
-        }
-        refreshAll()
     }
     
     func restartVM() {
@@ -396,8 +379,14 @@ class GUIStateManager: ObservableObject {
     }
     
     func pullNewImage(repo: String, tag: String) {
-        ContainerManager.shared.addImage(repository: repo, tag: tag)
-        refreshAll()
+        self.isPullingImage = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            ContainerManager.shared.addImage(repository: repo, tag: tag)
+            DispatchQueue.main.async {
+                self.isPullingImage = false
+                self.refreshAll()
+            }
+        }
     }
     
     func addPortForward(hostPort: Int, containerPort: Int, containerName: String) {
@@ -1510,8 +1499,6 @@ struct ImagesDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     @State private var pullRepo = ""
     @State private var pullTag = "latest"
-    @State private var isPulling = false
-    @State private var pullProgress: Double = 0.0
     
     var body: some View {
         ScrollView {
@@ -1528,28 +1515,29 @@ struct ImagesDashboardView: View {
                     HStack {
                         TextField("Repository Name (e.g. alpine, redis)", text: $pullRepo)
                             .textFieldStyle(.roundedBorder)
-                            .disabled(isPulling)
+                            .disabled(state.isPullingImage)
                         
                         TextField("Tag", text: $pullTag)
                             .frame(width: 80)
                             .textFieldStyle(.roundedBorder)
-                            .disabled(isPulling)
+                            .disabled(state.isPullingImage)
                         
                         Button(action: startPullImage) {
-                            Text(isPulling ? "Pulling" : "Pull")
+                            Text(state.isPullingImage ? "Pulling" : "Pull")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isPulling || pullRepo.isEmpty)
+                        .disabled(state.isPullingImage || pullRepo.isEmpty)
                     }
                     
-                    if isPulling {
+                    if state.isPullingImage {
                         VStack(alignment: .leading, spacing: 4) {
-                            ProgressView(value: pullProgress, total: 100.0)
-                                .progressViewStyle(.linear)
-                                .tint(.shibaOrange)
-                            Text("Downloading layers... \(Int(pullProgress))%")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Downloading and extracting real OCI registry layers asynchronously...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }
@@ -1600,18 +1588,8 @@ struct ImagesDashboardView: View {
     }
     
     private func startPullImage() {
-        isPulling = true
-        pullProgress = 0.0
-        
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-            pullProgress += 5.0
-            if pullProgress >= 100.0 {
-                timer.invalidate()
-                state.pullNewImage(repo: pullRepo, tag: pullTag)
-                isPulling = false
-                pullRepo = ""
-            }
-        }
+        state.pullNewImage(repo: pullRepo, tag: pullTag)
+        pullRepo = ""
     }
 }
 

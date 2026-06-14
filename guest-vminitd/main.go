@@ -65,15 +65,33 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 	switch strings.ToLower(cmd.Action) {
 	case "run":
 		log.Printf("[vminitd] [OCI Spine] Instantiating container '%s' from image '%s'...", cmd.Name, cmd.Image)
-		resp = Response{
-			Success: true,
-			Output:  fmt.Sprintf("Container %s successfully provisioned and launched in guest OCI network namespaces.", cmd.Name),
+		execCmd := exec.Command("/usr/local/bin/container", "run", "-d", "--name", cmd.Name, cmd.Image)
+		out, err := execCmd.CombinedOutput()
+		if err != nil {
+			resp = Response{
+				Success: false,
+				Error:   fmt.Sprintf("Failed to run container: %v (Output: %s)", err, string(out)),
+			}
+		} else {
+			resp = Response{
+				Success: true,
+				Output:  fmt.Sprintf("Container %s successfully provisioned and launched in OCI namespaces.", cmd.Name),
+			}
 		}
-	case "exec":
-		shellCmd := strings.Join(cmd.Cmd, " ")
-		log.Printf("[vminitd] [OCI Spine] Executing shell command: %s", shellCmd)
 		
-		execCmd := exec.Command("sh", "-c", shellCmd)
+	case "exec":
+		if cmd.Name == "" {
+			resp = Response{
+				Success: false,
+				Error:   "Command execution requires a targeted container name.",
+			}
+			break
+		}
+		shellCmd := strings.Join(cmd.Cmd, " ")
+		log.Printf("[vminitd] [OCI Spine] Executing shell command inside container '%s': %s", cmd.Name, shellCmd)
+		
+		// Run command strictly inside the targeted secure container context to eliminate host RCE vulnerabilities
+		execCmd := exec.Command("/usr/local/bin/container", "exec", cmd.Name, "sh", "-c", shellCmd)
 		out, err := execCmd.CombinedOutput()
 		if err != nil {
 			if len(out) > 0 {
@@ -93,11 +111,23 @@ func dispatchCommand(conn net.Conn, cmd Command) {
 				Output:  string(out),
 			}
 		}
+		
 	case "ps":
-		resp = Response{
-			Success: true,
-			Output:  "[{\"id\":\"c_custom_guest\",\"name\":\"guest-app\",\"image\":\"alpine-nginx\",\"state\":\"running\"}]",
+		log.Println("[vminitd] [OCI Spine] Fetching container lists from engine...")
+		execCmd := exec.Command("/usr/local/bin/container", "list", "--format", "json")
+		out, err := execCmd.CombinedOutput()
+		if err != nil {
+			resp = Response{
+				Success: false,
+				Error:   err.Error(),
+			}
+		} else {
+			resp = Response{
+				Success: true,
+				Output:  string(out),
+			}
 		}
+		
 	default:
 		resp = Response{
 			Success: false,

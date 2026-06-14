@@ -43,7 +43,7 @@ echo "[3/7] Container Provisioning & Run"
 $APC_CLI rm test-web 2>/dev/null || true
 
 # Spin up a custom test container using port 8085 to avoid collision with running web-app on port 80 and it-tools on port 8081
-$APC_CLI run test-web alpine-nginx 8085:8080
+$APC_CLI run test-web nginx:alpine 8085:80
 
 # Verify container was created and listed
 CONTAINERS=$($APC_CLI ps)
