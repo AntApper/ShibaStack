@@ -13,6 +13,80 @@ extension Color {
     static let shibaGold = Color(red: 234/255, green: 168/255, blue: 58/255)
 }
 
+// MARK: - Programmatic Shiba Mascot Vector Icon (Premium Brand Compliance)
+struct ShibaIconView: View {
+    var body: some View {
+        ZStack {
+            // Ears (Shiba Orange and Cream)
+            HStack(spacing: 12) {
+                // Left Ear
+                Path { path in
+                    path.move(to: CGPoint(x: 2, y: 10))
+                    path.addLine(to: CGPoint(x: 5, y: 0))
+                    path.addLine(to: CGPoint(x: 10, y: 8))
+                    path.closeSubpath()
+                }
+                .fill(Color.shibaOrange)
+                
+                Spacer()
+                
+                // Right Ear
+                Path { path in
+                    path.move(to: CGPoint(x: 8, y: 10))
+                    path.addLine(to: CGPoint(x: 5, y: 0))
+                    path.addLine(to: CGPoint(x: 0, y: 8))
+                    path.closeSubpath()
+                }
+                .fill(Color.shibaOrange)
+            }
+            .frame(width: 18, height: 10)
+            .offset(y: -4)
+            
+            // Face Base (Shiba Orange)
+            Circle()
+                .fill(Color.shibaOrange)
+                .frame(width: 18, height: 18)
+            
+            // Cheeks (Shiba Cream)
+            HStack(spacing: 2) {
+                Circle()
+                    .fill(Color.shibaCream)
+                    .frame(width: 7, height: 7)
+                Spacer()
+                Circle()
+                    .fill(Color.shibaCream)
+                    .frame(width: 7, height: 7)
+            }
+            .frame(width: 14)
+            .offset(y: 2)
+            
+            // Muzzle (Shiba Cream)
+            Ellipse()
+                .fill(Color.shibaCream)
+                .frame(width: 8, height: 6)
+                .offset(y: 4)
+            
+            // Nose (Charcoal)
+            Circle()
+                .fill(Color.shibaCharcoal)
+                .frame(width: 2, height: 2)
+                .offset(y: 2)
+            
+            // Eyes (Charcoal)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Color.shibaCharcoal)
+                    .frame(width: 1.5, height: 1.5)
+                Circle()
+                    .fill(Color.shibaCharcoal)
+                    .frame(width: 1.5, height: 1.5)
+            }
+            .offset(y: -1)
+        }
+        .frame(width: 20, height: 20)
+    }
+}
+
 // MARK: - App Entry Point
 @main
 struct APCApp: App {
@@ -31,11 +105,16 @@ struct APCApp: App {
             SidebarCommands() // Standard Cmd+Option+S sidebar toggle
         }
         
-        // 2. Menu Bar Extra Status Item (using server icon for maximum rendering accuracy)
-        MenuBarExtra("ShibaStack", systemImage: "server.rack") {
+        // 2. Menu Bar Extra Status Item (using custom Shiba dog icon for premium branding)
+        MenuBarExtra {
             MenuBarView()
                 .environmentObject(stateManager)
                 .tint(.shibaOrange)
+        } label: {
+            HStack(spacing: 4) {
+                ShibaIconView()
+                Text("ShibaStack")
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -1234,81 +1313,89 @@ struct ImagesDashboardView: View {
     @State private var pullProgress: Double = 0.0
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Container Images")
-                .font(.title)
-                .fontWeight(.bold)
-                .padding([.top, .leading])
-            
-            // Visual Pull Image Box (Matches OrbStack capabilities)
+        ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Pull New Image")
-                    .font(.headline)
+                Text("Container Images")
+                    .font(.title)
+                    .fontWeight(.bold)
                 
-                HStack {
-                    TextField("Repository Name (e.g. alpine, redis)", text: $pullRepo)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(isPulling)
+                // Visual Pull Image Box (Matches OrbStack capabilities)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Pull New Image")
+                        .font(.headline)
                     
-                    TextField("Tag", text: $pullTag)
-                        .frame(width: 80)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(isPulling)
-                    
-                    Button(action: startPullImage) {
-                        Text(isPulling ? "Pulling" : "Pull")
+                    HStack {
+                        TextField("Repository Name (e.g. alpine, redis)", text: $pullRepo)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(isPulling)
+                        
+                        TextField("Tag", text: $pullTag)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(isPulling)
+                        
+                        Button(action: startPullImage) {
+                            Text(isPulling ? "Pulling" : "Pull")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isPulling || pullRepo.isEmpty)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isPulling || pullRepo.isEmpty)
+                    
+                    if isPulling {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: pullProgress, total: 100.0)
+                                .progressViewStyle(.linear)
+                                .tint(.shibaOrange)
+                            Text("Downloading layers... \(Int(pullProgress))%")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
                 
-                if isPulling {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ProgressView(value: pullProgress, total: 100.0)
-                            .progressViewStyle(.linear)
-                            .tint(.shibaOrange)
-                        Text("Downloading layers... \(Int(pullProgress))%")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                // Card list of local images
+                VStack(spacing: 8) {
+                    ForEach(state.images) { img in
+                        HStack {
+                            Image(systemName: "photo")
+                                .foregroundColor(.shibaOrange)
+                                .font(.title2)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(img.repository):\(img.tag)")
+                                    .font(.headline)
+                                Text("Image ID: \(img.id)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Text(img.size)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 12)
+                            
+                            Button(action: { state.removeImage(img.id) }) {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Delete Image")
+                        }
+                        .padding()
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
                     }
                 }
             }
             .padding()
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            
-            List(state.images) { img in
-                HStack {
-                    Image(systemName: "photo")
-                        .foregroundColor(.shibaOrange)
-                        .font(.title2)
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(img.repository):\(img.tag)")
-                            .font(.headline)
-                        Text("Image ID: \(img.id)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Text(img.size)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 12)
-                    
-                    Button(action: { state.removeImage(img.id) }) {
-                        Image(systemName: "trash")
-                            .foregroundColor(.red)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete Image")
-                }
-                .padding(.vertical, 4)
-            }
         }
+        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor))
     }
     
     private func startPullImage() {
@@ -1332,81 +1419,89 @@ struct VolumesDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Persistent Volumes")
-                    .font(.title)
-                    .fontWeight(.bold)
-                Spacer()
-                Button(action: state.pruneStorage) {
-                    Label("One-Click Disk Prune", systemImage: "sparkles")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.shibaGold)
-            }
-            .padding([.top, .horizontal])
-            
-            // Storage Capacity Utilization Board
-            HStack(spacing: 24) {
-                // Circular ring gauge
-                ZStack {
-                    Circle()
-                        .stroke(Color.secondary.opacity(0.15), lineWidth: 12)
-                        .frame(width: 80, height: 80)
-                    
-                    Circle()
-                        .trim(from: 0.0, to: 0.42)
-                        .stroke(Color.shibaOrange, style: StrokeStyle(lineWidth: 12, lineCap: .round))
-                        .frame(width: 80, height: 80)
-                        .rotationEffect(.degrees(-90))
-                    
-                    VStack {
-                        Text("42%")
-                            .font(.headline)
-                        Text("Used")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Persistent Volumes")
+                        .font(.title)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button(action: state.pruneStorage) {
+                        Label("One-Click Disk Prune", systemImage: "sparkles")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.shibaGold)
                 }
                 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Disk Allocation Statistics")
-                        .font(.headline)
-                    Text("Total Volume Capacity: 10.0 GB")
-                        .font(.subheadline)
-                    Text("Active Mounts Storage: 155.8 MB | Reclaimable Space: 1.6 MB")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
-            .padding()
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            
-            List(state.volumes) { vol in
-                HStack {
-                    Image(systemName: "folder.fill")
-                        .foregroundColor(.shibaOrange)
-                        .font(.title2)
+                // Storage Capacity Utilization Board
+                HStack(spacing: 24) {
+                    // Circular ring gauge
+                    ZStack {
+                        Circle()
+                            .stroke(Color.secondary.opacity(0.15), lineWidth: 12)
+                            .frame(width: 80, height: 80)
+                        
+                        Circle()
+                            .trim(from: 0.0, to: 0.42)
+                            .stroke(Color.shibaOrange, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(-90))
+                        
+                        VStack {
+                            Text("42%")
+                                .font(.headline)
+                            Text("Used")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                    }
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(vol.name)
+                        Text("Disk Allocation Statistics")
                             .font(.headline)
-                        Text("Mount Point: \(vol.mountPoint)")
+                        Text("Total Volume Capacity: 10.0 GB")
+                            .font(.subheadline)
+                        Text("Active Mounts Storage: 155.8 MB | Reclaimable Space: 1.6 MB")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                     Spacer()
-                    
-                    Text(vol.size)
-                        .font(.subheadline)
-                        .fontWeight(.bold)
                 }
-                .padding(.vertical, 4)
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+                
+                // Card list of volumes
+                VStack(spacing: 8) {
+                    ForEach(state.volumes) { vol in
+                        HStack {
+                            Image(systemName: "folder.fill")
+                                .foregroundColor(.shibaOrange)
+                                .font(.title2)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(vol.name)
+                                    .font(.headline)
+                                Text("Mount Point: \(vol.mountPoint)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            
+                            Text(vol.size)
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                        }
+                        .padding()
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
+                    }
+                }
             }
+            .padding()
         }
+        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
@@ -1419,137 +1514,137 @@ struct NetworkDashboardView: View {
     @State private var fwdContainerName = ""
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("ShibaStack Network & Local DNS")
-                .font(.title)
-                .fontWeight(.bold)
-                .padding([.top, .horizontal])
-            
-            Text("Automatic local DNS resolving is active. Any running container responds dynamically at its registered domain suffix '*.apc.local' without root modifications.")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .padding(.horizontal)
-            
-            // Host Network Services Status Panel
-            HStack(spacing: 16) {
-                // DNS Resolver status
-                HStack(spacing: 12) {
-                    Image(systemName: "globe.americas.fill")
-                        .foregroundColor(.green)
-                        .font(.title2)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("DNS Server")
-                            .font(.headline)
-                        Text("Port 15353 (UDP)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Text("ACTIVE")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.15))
-                        .foregroundColor(.green)
-                        .cornerRadius(4)
-                }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("ShibaStack Network & Local DNS")
+                    .font(.title)
+                    .fontWeight(.bold)
                 
-                // Proxy status
-                HStack(spacing: 12) {
-                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                        .foregroundColor(.green)
-                        .font(.title2)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Reverse Proxy")
-                            .font(.headline)
-                        Text("Port 80/8080 (TCP)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                Text("Automatic local DNS resolving is active. Any running container responds dynamically at its registered domain suffix '*.apc.local' without root modifications.")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                
+                // Host Network Services Status Panel
+                HStack(spacing: 16) {
+                    // DNS Resolver status
+                    HStack(spacing: 12) {
+                        Image(systemName: "globe.americas.fill")
+                            .foregroundColor(.green)
+                            .font(.title2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("DNS Server")
+                                .font(.headline)
+                            Text("Port 15353 (UDP)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Text("ACTIVE")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .foregroundColor(.green)
+                            .cornerRadius(4)
                     }
-                    Spacer()
-                    Text("ACTIVE")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.15))
-                        .foregroundColor(.green)
-                        .cornerRadius(4)
-                }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
-            }
-            .padding(.horizontal)
-            
-            // Loop Guard Shield Banner (Informing user of loopback safety)
-            HStack(spacing: 12) {
-                Image(systemName: "shield.checkered")
-                    .foregroundColor(.teal)
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Proxy Loopback Loop Guard Active")
-                        .font(.headline)
-                    Text("Protects ShibaStack from self-referential port forwarding loops. Mappings onto active listener ports are automatically intercepted with a standard HTTP 508 Loop Detected status.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-            }
-            .padding()
-            .background(Color.teal.opacity(0.08))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            
-            // Add custom port forwarding rule (Matches OrbStack networking tab)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Custom Port Mappings")
-                        .font(.headline)
-                    Spacer()
-                    Button(action: { showingAddRule.toggle() }) {
-                        Label(showingAddRule ? "Hide Form" : "Add Port Map", systemImage: "plus")
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(10)
+                    
+                    // Proxy status
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
+                            .foregroundColor(.green)
+                            .font(.title2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Reverse Proxy")
+                                .font(.headline)
+                            Text("Port 80/8080 (TCP)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Text("ACTIVE")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .foregroundColor(.green)
+                            .cornerRadius(4)
                     }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(10)
                 }
                 
-                if showingAddRule {
+                // Loop Guard Shield Banner (Informing user of loopback safety)
+                HStack(spacing: 12) {
+                    Image(systemName: "shield.checkered")
+                        .foregroundColor(.teal)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Proxy Loopback Loop Guard Active")
+                            .font(.headline)
+                        Text("Protects ShibaStack from self-referential port forwarding loops. Mappings onto active listener ports are automatically intercepted with a standard HTTP 508 Loop Detected status.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+                .padding()
+                .background(Color.teal.opacity(0.08))
+                .cornerRadius(10)
+                
+                // Add custom port forwarding rule (Matches OrbStack networking tab)
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        TextField("Host Port", text: $fwdHostPort)
-                            .textFieldStyle(.roundedBorder)
-                        Text(":")
-                        TextField("Container Port", text: $fwdContainerPort)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        Picker("", selection: $fwdContainerName) {
-                            Text("Select container").tag("")
-                            ForEach(state.containers) { cont in
-                                Text(cont.name).tag(cont.name)
+                        Text("Custom Port Mappings")
+                            .font(.headline)
+                        Spacer()
+                        Button(action: { showingAddRule.toggle() }) {
+                            Label(showingAddRule ? "Hide Form" : "Add Port Map", systemImage: "plus")
+                        }
+                    }
+                    
+                    if showingAddRule {
+                        HStack {
+                            TextField("Host Port", text: $fwdHostPort)
+                                .textFieldStyle(.roundedBorder)
+                            Text(":")
+                            TextField("Container Port", text: $fwdContainerPort)
+                                .textFieldStyle(.roundedBorder)
+                            
+                            Picker("", selection: $fwdContainerName) {
+                                Text("Select container").tag("")
+                                ForEach(state.containers) { cont in
+                                    Text(cont.name).tag(cont.name)
+                                }
                             }
+                            .frame(width: 150)
+                            
+                            Button("Apply Forward") {
+                                guard let hPort = Int(fwdHostPort), let cPort = Int(fwdContainerPort), !fwdContainerName.isEmpty else { return }
+                                state.addPortForward(hostPort: hPort, containerPort: cPort, containerName: fwdContainerName)
+                                showingAddRule = false
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(fwdContainerName.isEmpty)
                         }
-                        .frame(width: 150)
-                        
-                        Button("Apply Forward") {
-                            guard let hPort = Int(fwdHostPort), let cPort = Int(fwdContainerPort), !fwdContainerName.isEmpty else { return }
-                            state.addPortForward(hostPort: hPort, containerPort: cPort, containerName: fwdContainerName)
-                            showingAddRule = false
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(fwdContainerName.isEmpty)
                     }
                 }
-            }
-            .padding()
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            
-            List {
-                Section(header: Text("Active Port Forwardings & Subdomains").font(.headline)) {
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+                
+                // List of active subdomains as card items
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Active Port Forwardings & Subdomains")
+                        .font(.headline)
+                        .padding(.bottom, 4)
+                    
                     ForEach(state.containers.filter { $0.state == "running" }) { cont in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
@@ -1562,21 +1657,21 @@ struct NetworkDashboardView: View {
                             }
                             Spacer()
                             
-                            Link(destination: URL(string: "http://\(cont.name).apc.local:8080")!) {
+                            Link(destination: state.getContainerURL(cont)) {
                                 Label("Open Domain", systemImage: "safari")
                             }
                             .buttonStyle(.bordered)
                         }
-                        .padding(.vertical, 4)
+                        .padding()
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
                     }
                 }
             }
+            .padding()
         }
-        .onAppear {
-            if let first = state.containers.first {
-                fwdContainerName = first.name
-            }
-        }
+        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
@@ -1585,91 +1680,98 @@ struct HardwareDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Hardware Forwarding & Virtual Machine Config")
-                .font(.title)
-                .fontWeight(.bold)
-                .padding([.top, .horizontal])
-            
-            // Dynamic VM Resource sliders (Matches OrbStack virtual machine configurations)
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Configure ShibaStack Virtual Machine Allocations")
-                    .font(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Hardware Forwarding & Virtual Machine Config")
+                    .font(.title)
+                    .fontWeight(.bold)
                 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Label("CPU Allocation", systemImage: "cpu")
-                        Spacer()
-                        Text("\(state.allocatedCPUs) Cores")
-                            .bold()
-                            .foregroundColor(.shibaOrange)
+                // Dynamic VM Resource sliders (Matches OrbStack virtual machine configurations)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Configure ShibaStack Virtual Machine Allocations")
+                        .font(.headline)
+                    
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Label("CPU Allocation", systemImage: "cpu")
+                            Spacer()
+                            Text("\(state.allocatedCPUs) Cores")
+                                .bold()
+                                .foregroundColor(.shibaOrange)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(state.allocatedCPUs) },
+                            set: { state.allocatedCPUs = Int($0) }
+                        ), in: 1...8, step: 1)
+                        .tint(.shibaOrange)
+                        
+                        HStack {
+                            Label("Memory Allocation", systemImage: "memorychip")
+                            Spacer()
+                            Text("\(state.allocatedMemoryGB) GB")
+                                .bold()
+                                .foregroundColor(.shibaOrange)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(state.allocatedMemoryGB) },
+                            set: { state.allocatedMemoryGB = Int($0) }
+                        ), in: 1...16, step: 1)
+                        .tint(.shibaOrange)
                     }
-                    Slider(value: Binding(
-                        get: { Double(state.allocatedCPUs) },
-                        set: { state.allocatedCPUs = Int($0) }
-                    ), in: 1...8, step: 1)
-                    .tint(.shibaOrange)
                     
                     HStack {
-                        Label("Memory Allocation", systemImage: "memorychip")
+                        Text("Reboot required to apply modifications to guest kernels.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         Spacer()
-                        Text("\(state.allocatedMemoryGB) GB")
-                            .bold()
-                            .foregroundColor(.shibaOrange)
+                        Button("Apply Resource Limits") {
+                            state.restartVM()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.vmState != "running")
                     }
-                    Slider(value: Binding(
-                        get: { Double(state.allocatedMemoryGB) },
-                        set: { state.allocatedMemoryGB = Int($0) }
-                    ), in: 1...16, step: 1)
-                    .tint(.shibaOrange)
                 }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
                 
-                HStack {
-                    Text("Reboot required to apply modifications to guest kernels.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button("Apply Resource Limits") {
-                        state.restartVM()
+                Text("Scan and dynamically connect physical USB hardware accessories on your Mac host directly to the Alpine guest virtual machine using Apple's virtualization bus.")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                
+                // Card list of USB devices
+                VStack(spacing: 8) {
+                    ForEach(state.usbDevices) { dev in
+                        HStack {
+                            Image(systemName: "usb")
+                                .foregroundColor(.shibaOrange)
+                                .font(.title2)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(dev.name)
+                                    .font(.headline)
+                                Text("ID: \(dev.vendorId):\(dev.productId) | Serial: \(dev.serialNumber)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            
+                            Toggle(dev.isAttached ? "Connected" : "Not Attached", isOn: Binding(
+                                get: { dev.isAttached },
+                                set: { _ in state.toggleUSBDevice(dev) }
+                            ))
+                            .toggleStyle(.switch)
+                        }
+                        .padding()
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(state.vmState != "running")
                 }
             }
             .padding()
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            
-            Text("Scan and dynamically connect physical USB hardware accessories on your Mac host directly to the Alpine guest virtual machine using Apple's virtualization bus.")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .padding(.horizontal)
-            
-            List(state.usbDevices) { dev in
-                HStack {
-                    Image(systemName: "usb")
-                        .foregroundColor(.shibaOrange)
-                        .font(.title2)
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(dev.name)
-                            .font(.headline)
-                        Text("ID: \(dev.vendorId):\(dev.productId) | Serial: \(dev.serialNumber)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    
-                    Toggle(dev.isAttached ? "Connected" : "Not Attached", isOn: Binding(
-                        get: { dev.isAttached },
-                        set: { _ in state.toggleUSBDevice(dev) }
-                    ))
-                    .toggleStyle(.switch)
-                }
-                .padding(.vertical, 6)
-            }
         }
+        .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
