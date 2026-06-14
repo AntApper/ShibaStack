@@ -12,6 +12,30 @@ public final class VMManager {
         return home.appendingPathComponent(".apc/vm_state")
     }
     
+    private var configFileURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".apc/config.json")
+    }
+    
+    public func loadVMConfig() -> VMConfig {
+        let decoder = JSONDecoder()
+        if let data = try? Data(contentsOf: configFileURL),
+           let config = try? decoder.decode(VMConfig.self, from: data) {
+            return config
+        }
+        let defaultConfig = VMConfig(allocatedCPUs: 2, allocatedMemoryGB: 4)
+        saveVMConfig(defaultConfig)
+        return defaultConfig
+    }
+    
+    public func saveVMConfig(_ config: VMConfig) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(config) {
+            try? data.write(to: configFileURL, options: .atomic)
+        }
+    }
+    
     private init() {
         // Detect if we can run real virtualization (requires entitlements)
         // For CLI and testing, we default to enabling a fully functional Mock VM mode 
@@ -26,7 +50,11 @@ public final class VMManager {
     }
     
     /// Configures and starts the Virtual Machine
-    public func startVM(memorySizeGB: UInt64 = 4, cpuCount: Int = 2) throws {
+    public func startVM(memorySizeGB: UInt64? = nil, cpuCount: Int? = nil) throws {
+        let savedConfig = loadVMConfig()
+        let finalCPU = cpuCount ?? savedConfig.allocatedCPUs
+        let finalMemoryGB = memorySizeGB ?? UInt64(savedConfig.allocatedMemoryGB)
+        
         if isMockMode {
             try? "running".write(to: stateFileURL, atomically: true, encoding: .utf8)
             print("[APC-Core] Starting Mock Virtualization Engine (Alpine-based environment)...")
@@ -37,21 +65,35 @@ public final class VMManager {
         let config = VZVirtualMachineConfiguration()
         
         // 1. Set CPU and Memory configurations
-        config.cpuCount = cpuCount
-        config.memorySize = memorySizeGB * 1024 * 1024 * 1024
+        config.cpuCount = finalCPU
+        config.memorySize = finalMemoryGB * 1024 * 1024 * 1024
         
-        // 2. Configure Dynamic Memory Ballooning
+        // 2. Configure standard Linux Boot Loader (pointing to Alpine guest kernels)
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let kernelURL = homeDir.appendingPathComponent(".apc/boot/vmlinuz")
+        let initrdURL = homeDir.appendingPathComponent(".apc/boot/initrd.img")
+        let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
+        bootLoader.initialRamdiskURL = initrdURL
+        bootLoader.commandLine = "console=hvc0 root=/dev/vda alpine_dev=vdb modules=virtio,virtio_pci,virtio_fs"
+        config.bootLoader = bootLoader
+        
+        // 3. Configure Dynamic Memory Ballooning
         let balloonConfig = VZVirtioTraditionalMemoryBalloonDeviceConfiguration()
         config.memoryBalloonDevices = [balloonConfig]
         
-        // 3. Configure VirtioFS Host Sharing (/Users)
+        // 4. Configure VirtioFS Host Sharing (/Users)
         let sharedDirectory = VZSharedDirectory(url: URL(fileURLWithPath: "/Users"), readOnly: false)
         let singleDirectoryShare = VZSingleDirectoryShare(directory: sharedDirectory)
         let fileSystemDeviceConfig = VZVirtioFileSystemDeviceConfiguration(tag: "users")
         fileSystemDeviceConfig.share = singleDirectoryShare
         config.directorySharingDevices = [fileSystemDeviceConfig]
         
-        // 4. Configure Virtual USB 3.0 controller
+        // 5. Configure Zero-Privilege Guest NAT Networking (reaches Go reverse proxy)
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        config.networkDevices = [networkDevice]
+        
+        // 6. Configure Virtual USB 3.0 controller
         let usbControllerConfig = VZXHCIControllerConfiguration()
         config.usbControllers = [usbControllerConfig]
         

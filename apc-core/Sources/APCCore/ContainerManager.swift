@@ -28,13 +28,13 @@ public final class ContainerManager {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         if let data = try? encoder.encode(containers) {
-            try? data.write(to: containersFileURL)
+            try? data.write(to: containersFileURL, options: .atomic)
         }
         if let data = try? encoder.encode(images) {
-            try? data.write(to: imagesFileURL)
+            try? data.write(to: imagesFileURL, options: .atomic)
         }
         if let data = try? encoder.encode(volumes) {
-            try? data.write(to: volumesFileURL)
+            try? data.write(to: volumesFileURL, options: .atomic)
         }
         syncRoutingConfig()
     }
@@ -147,10 +147,24 @@ public final class ContainerManager {
         return newCont
     }
     
+    public func addPortForward(containerName: String, portMap: String) {
+        if let idx = containers.firstIndex(where: { $0.name == containerName }) {
+            containers[idx].ports.append(portMap)
+            saveState()
+        }
+    }
+    
     // MARK: - Image APIs
     
     public func getImages() -> [ContainerImage] {
         return images
+    }
+    
+    public func addImage(repository: String, tag: String) {
+        let id = "img_" + UUID().uuidString.prefix(6).lowercased()
+        let newImage = ContainerImage(id: id, repository: repository, tag: tag, size: "24.1 MB", created: "Just now")
+        images.append(newImage)
+        saveState()
     }
     
     public func removeImage(id: String) {
@@ -186,20 +200,24 @@ public final class ContainerManager {
         
         for container in containers {
             guard container.state == "running" else { continue }
-            // For routing.json, extract host-to-port mapping. E.g., web-app.apc.local -> 8080
-            let domain = "\(container.name).apc.local"
             
-            // Extract the host container port (port on the guest, which we can map to the host port)
-            // Format: "80:8080" (meaning map port 80 to 8080)
-            var targetPort = 8080
-            if let portStr = container.ports.first {
+            // Generate routing domains for all configured port mappings
+            for (idx, portStr) in container.ports.enumerated() {
+                var targetPort = 8080
                 if let hostPort = portStr.split(separator: ":").first, let parsed = Int(hostPort) {
                     targetPort = parsed
                 } else if let parsed = Int(portStr) {
                     targetPort = parsed
                 }
+                
+                if idx == 0 {
+                    let domain = "\(container.name).apc.local"
+                    routes[domain] = targetPort
+                } else {
+                    let domain = "\(container.name)-\(targetPort).apc.local"
+                    routes[domain] = targetPort
+                }
             }
-            routes[domain] = targetPort
         }
         
         // Write routes to json file

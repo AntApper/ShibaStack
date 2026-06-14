@@ -21,9 +21,10 @@ type Config struct {
 }
 
 var (
-	configPath string
-	routes     = make(map[string]int)
-	routesMu   sync.RWMutex
+	configPath      string
+	routes          = make(map[string]int)
+	routesMu        sync.RWMutex
+	activeProxyPort = 8080 // Guard proxy port to prevent loopback routing loops
 )
 
 func init() {
@@ -105,12 +106,18 @@ func getTargetPort(host string) (int, bool) {
 func startDNSServer() {
 	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:15353")
 	if err != nil {
-		log.Fatalf("Failed to resolve UDP address: %v", err)
+		log.Printf("Failed to resolve UDP address 127.0.0.1:15353: %v", err)
+		return
 	}
 
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		log.Fatalf("Failed to listen on UDP 127.0.0.1:15353: %v", err)
+	var conn *net.UDPConn
+	for {
+		conn, err = net.ListenUDP("udp", addr)
+		if err == nil {
+			break
+		}
+		log.Printf("WARNING: Failed to listen on UDP 127.0.0.1:15353 (DNS port conflict?): %v. Retrying in 10s...", err)
+		time.Sleep(10 * time.Second)
 	}
 	defer conn.Close()
 
@@ -235,22 +242,50 @@ func startHTTPProxy() {
 	// If it fails (due to lack of root/sudo), fall back to port 8080.
 	serverAddr := "127.0.0.1:80"
 	log.Printf("Attempting to start HTTP Reverse Proxy on %s...", serverAddr)
-	listener, err := net.Listen("tcp", serverAddr)
-	if err != nil {
-		log.Printf("Could not bind to port 80 (usually requires sudo/root). Falling back to 127.0.0.1:8080. Error: %v", err)
-		serverAddr = "127.0.0.1:8080"
+
+	var listener net.Listener
+	for {
+		var err error
 		listener, err = net.Listen("tcp", serverAddr)
-		if err != nil {
-			log.Fatalf("Failed to listen on backup port 127.0.0.1:8080: %v", err)
+		if err == nil {
+			break
 		}
+
+		if serverAddr == "127.0.0.1:80" {
+			log.Printf("Could not bind to port 80 (usually requires sudo/root). Falling back to 127.0.0.1:8080. Error: %v", err)
+			serverAddr = "127.0.0.1:8080"
+			continue
+		}
+
+		log.Printf("WARNING: Failed to listen on backup port %s (port conflict?): %v. Retrying in 10s...", serverAddr, err)
+		time.Sleep(10 * time.Second)
 	}
 
-	log.Printf("HTTP Reverse Proxy successfully listening on %s", serverAddr)
+	if strings.HasSuffix(serverAddr, ":80") {
+		activeProxyPort = 80
+	} else {
+		activeProxyPort = 8080
+	}
+
+	log.Printf("HTTP Reverse Proxy successfully listening on %s (Loop Guard Active)", serverAddr)
+
+	// Wrap proxy with a loop detection handler
+	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		port, found := getTargetPort(host)
+		if found && port == activeProxyPort {
+			w.WriteHeader(http.StatusLoopDetected) // 508 Loop Detected
+			fmt.Fprintf(w, "APC Proxy Gateway Error: Loopback routing loop detected. Host %q maps directly to proxy listening port %d.\n", host, port)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	})
+
 	server := &http.Server{
-		Handler: proxy,
+		Handler: proxyHandler,
 	}
 	if err := server.Serve(listener); err != nil {
-		log.Fatalf("HTTP Proxy server failed: %v", err)
+		log.Fatalf("HTTP Proxy server failed to serve: %v", err)
 	}
 }
 

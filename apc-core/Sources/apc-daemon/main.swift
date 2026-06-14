@@ -12,7 +12,7 @@ let usbManager = USBManager.shared
 
 do {
     // Start VM in background mode (utilizes automatic Mock fallback if entitlements are not present)
-    try vmManager.startVM(memorySizeGB: 2, cpuCount: 2)
+    try vmManager.startVM()
     print("VM status: \(vmManager.getVMState())")
     
     let usbDevices = usbManager.scanDevices()

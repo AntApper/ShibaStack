@@ -71,7 +71,12 @@ class GUIStateManager: ObservableObject {
     private var timer: Timer?
     
     init() {
+        let savedConfig = VMManager.shared.loadVMConfig()
+        self.allocatedCPUs = savedConfig.allocatedCPUs
+        self.allocatedMemoryGB = savedConfig.allocatedMemoryGB
+        
         refreshAll()
+        checkDependencies() // Check dependencies once on startup
         startPeriodicRefresh()
     }
     
@@ -82,9 +87,6 @@ class GUIStateManager: ObservableObject {
         self.volumes = ContainerManager.shared.getVolumes()
         self.usbDevices = USBManager.shared.scanDevices()
         self.hardwareStats = ContainerManager.shared.getStats()
-        
-        // Dynamic background dependency checks
-        checkDependencies()
         
         // Auto-select first container if none selected
         if selectedContainer == nil, let first = containers.first {
@@ -109,15 +111,20 @@ class GUIStateManager: ObservableObject {
         if vmState == "running" {
             try? VMManager.shared.stopVM()
         } else {
-            try? VMManager.shared.startVM(memorySizeGB: UInt64(allocatedMemoryGB), cpuCount: allocatedCPUs)
+            let currentConfig = VMConfig(allocatedCPUs: allocatedCPUs, allocatedMemoryGB: allocatedMemoryGB)
+            VMManager.shared.saveVMConfig(currentConfig)
+            try? VMManager.shared.startVM()
         }
         refreshAll()
     }
     
     func restartVM() {
         try? VMManager.shared.stopVM()
+        let currentConfig = VMConfig(allocatedCPUs: allocatedCPUs, allocatedMemoryGB: allocatedMemoryGB)
+        VMManager.shared.saveVMConfig(currentConfig)
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            try? VMManager.shared.startVM(memorySizeGB: UInt64(self?.allocatedMemoryGB ?? 4), cpuCount: self?.allocatedCPUs ?? 2)
+            try? VMManager.shared.startVM()
             self?.refreshAll()
         }
     }
@@ -138,30 +145,13 @@ class GUIStateManager: ObservableObject {
     }
     
     func pullNewImage(repo: String, tag: String) {
-        let id = "img_" + UUID().uuidString.prefix(6).lowercased()
-        let newImage = ContainerImage(id: id, repository: repo, tag: tag, size: "24.1 MB", created: "Just now")
-        // Since we want this to update state
-        var currentImages = ContainerManager.shared.getImages()
-        currentImages.append(newImage)
-        if let data = try? JSONEncoder().encode(currentImages) {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            let fileURL = home.appendingPathComponent(".apc/images.json")
-            try? data.write(to: fileURL)
-        }
+        ContainerManager.shared.addImage(repository: repo, tag: tag)
         refreshAll()
     }
     
     func addPortForward(hostPort: Int, containerPort: Int, containerName: String) {
-        // Find container and add port forward state
-        if let idx = containers.firstIndex(where: { $0.name == containerName }) {
-            containers[idx].ports.append("\(hostPort):\(containerPort)")
-            if let data = try? JSONEncoder().encode(containers) {
-                let home = FileManager.default.homeDirectoryForCurrentUser
-                let fileURL = home.appendingPathComponent(".apc/containers.json")
-                try? data.write(to: fileURL)
-            }
-            refreshAll()
-        }
+        ContainerManager.shared.addPortForward(containerName: containerName, portMap: "\(hostPort):\(containerPort)")
+        refreshAll()
     }
     
     func removeImage(_ id: String) {
@@ -730,6 +720,47 @@ struct ContainersDashboardView: View {
             terminalLogs.append("root")
         case "pwd":
             terminalLogs.append("/root")
+        case "cat index.html":
+            terminalLogs.append("<!DOCTYPE html>")
+            terminalLogs.append("<html>")
+            terminalLogs.append("<head><title>Welcome to ShibaStack!</title></head>")
+            terminalLogs.append("<body>")
+            terminalLogs.append("<h1>🐕 ShibaStack: Container Up & Running!</h1>")
+            terminalLogs.append("<p>You are natively running Alpine + Nginx on Apple Silicon with near-zero overhead.</p>")
+            terminalLogs.append("</body>")
+            terminalLogs.append("</html>")
+        case "cat /etc/resolv.conf":
+            terminalLogs.append("# User-space DNS config mapped via ShibaStack Resolver")
+            terminalLogs.append("nameserver 127.0.0.1")
+            terminalLogs.append("port 15353")
+        case "cat /etc/hosts":
+            terminalLogs.append("127.0.0.1   localhost shiba-guest")
+            terminalLogs.append("127.0.0.1   web-app.apc.local postgres-db.apc.local")
+        case "nginx -v":
+            terminalLogs.append("nginx version: nginx/1.25.1 (Alpine Linux)")
+        case "ps", "ps aux":
+            terminalLogs.append("PID   USER     TIME  COMMAND")
+            terminalLogs.append("    1 root      0:01 /sbin/init")
+            terminalLogs.append("    8 root      0:02 /usr/sbin/syslogd -t")
+            terminalLogs.append("   22 root      0:05 /usr/bin/vminitd --vsock 1024")
+            terminalLogs.append("  104 root      0:12 nginx: master process nginx -g daemon off;")
+            terminalLogs.append("  105 nginx     0:08 nginx: worker process")
+        case "df -h":
+            terminalLogs.append("Filesystem      Size  Used Avail Use% Mounted on")
+            terminalLogs.append("/dev/root        4.0G  1.2G  2.6G  32% /")
+            terminalLogs.append("users           476G  182G  294G  39% /Users")
+        case "apk add curl":
+            terminalLogs.append("(1/3) Upgrading alpine-keys (3.18-r0 -> 3.18-r1)")
+            terminalLogs.append("(2/3) Installing libcurl (8.5.0-r0)")
+            terminalLogs.append("(3/3) Installing curl (8.5.0-r0)")
+            terminalLogs.append("Executing busybox-1.36.1-r2.trigger")
+            terminalLogs.append("OK: 12 MiB in 18 packages")
+        case "curl http://web-app.apc.local", "curl http://localhost":
+            terminalLogs.append("HTTP/1.1 200 OK")
+            terminalLogs.append("Server: nginx/1.25.1")
+            terminalLogs.append("Content-Type: text/html")
+            terminalLogs.append("")
+            terminalLogs.append("🐕 ShibaStack Landing: Container is online!")
         case "ping -c 3 apc.local":
             terminalLogs.append("PING apc.local (127.0.0.1): 56 data bytes")
             terminalLogs.append("64 bytes from 127.0.0.1: seq=0 ttl=64 time=0.124 ms")
@@ -740,7 +771,7 @@ struct ContainersDashboardView: View {
         case "clear":
             terminalLogs = []
         case "help":
-            terminalLogs.append("Available commands: ls, uname -a, whoami, pwd, ping -c 3 apc.local, clear, help")
+            terminalLogs.append("Available commands: ls, uname -a, whoami, pwd, cat index.html, cat /etc/resolv.conf, cat /etc/hosts, nginx -v, ps, df -h, apk add curl, curl http://localhost, ping -c 3 apc.local, clear, help")
         default:
             terminalLogs.append("sh: command not found: \(input). Type 'help' for instructions.")
         }

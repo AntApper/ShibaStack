@@ -79,3 +79,13 @@ public struct APCHardwareStats: Codable {
         self.maxMemory = maxMemory
     }
 }
+
+public struct VMConfig: Codable, Hashable {
+    public var allocatedCPUs: Int
+    public var allocatedMemoryGB: Int
+    
+    public init(allocatedCPUs: Int, allocatedMemoryGB: Int) {
+        self.allocatedCPUs = allocatedCPUs
+        self.allocatedMemoryGB = allocatedMemoryGB
+    }
+}

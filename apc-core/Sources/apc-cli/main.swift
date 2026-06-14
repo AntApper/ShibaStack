@@ -25,6 +25,8 @@ Core Commands:
   run <name> <image> <port> Spin up a new Alpine-based OCI container
   logs <container_id>       Stream/view active container logs
   prune                     Perform a one-click disk and unused volume clean
+  doctor                    Perform system diagnostic check of dependencies
+  config                    Manage persistent VM resource allocations
 
 Hardware & Network Commands:
   usb list                  Scan and list connected host USB devices
@@ -49,6 +51,53 @@ func main() {
     let usbManager = USBManager.shared
     
     switch command {
+    case "doctor":
+        runDoctor()
+        
+    case "config":
+        guard args.count > 2 else {
+            let config = vmManager.loadVMConfig()
+            print("--- ShibaStack Virtual Machine Allocation Configuration ---")
+            print("  CPU Allocation   : \(config.allocatedCPUs) Cores")
+            print("  Memory Allocation: \(config.allocatedMemoryGB) GB")
+            print("")
+            print("Usage:")
+            print("  apc config set cpu <count>     (Set allocated CPU cores)")
+            print("  apc config set memory <gb>     (Set allocated memory in GB)")
+            exit(0)
+        }
+        let subCommand = args[2].lowercased()
+        if subCommand == "set" {
+            guard args.count > 4 else {
+                print("Error: Missing key and value.")
+                print("Usage: apc config set <cpu|memory> <value>")
+                exit(1)
+            }
+            let key = args[3].lowercased()
+            let valStr = args[4]
+            guard let val = Int(valStr) else {
+                print("Error: Value must be an integer.")
+                exit(1)
+            }
+            
+            var currentConfig = vmManager.loadVMConfig()
+            if key == "cpu" {
+                currentConfig.allocatedCPUs = val
+                vmManager.saveVMConfig(currentConfig)
+                print("Successfully updated CPU allocation to \(val) cores. (Restart ShibaStack to apply changes)")
+            } else if key == "memory" {
+                currentConfig.allocatedMemoryGB = val
+                vmManager.saveVMConfig(currentConfig)
+                print("Successfully updated Memory allocation to \(val) GB. (Restart ShibaStack to apply changes)")
+            } else {
+                print("Error: Unknown configuration key '\(key)'. Supported: cpu, memory")
+                exit(1)
+            }
+        } else {
+            print("Unknown config command: \(subCommand). Supported: set")
+            exit(1)
+        }
+        
     case "start":
         print("Starting Apple Private Container (APC) VM engine...")
         do {
@@ -191,6 +240,66 @@ func main() {
         printUsage()
         exit(1)
     }
+}
+
+func runDoctor() {
+    print("--------------------------------------------------")
+    print("🐕 ShibaStack: Apple Private Container (APC) Doctor")
+    print("--------------------------------------------------")
+    print("Checking system dependencies and environment:")
+    
+    // 1. Check Swift/Xcode CLI Tools
+    let swiftPath = checkCommandExists("swift")
+    if swiftPath {
+        print("  [✓] Xcode Command Line Tools (Swift): Installed")
+    } else {
+        print("  [✗] Xcode Command Line Tools (Swift): NOT Found")
+    }
+    
+    // 2. Check Go Compiler
+    let goPath = checkCommandExists("go")
+    if goPath {
+        print("  [✓] Go Compiler: Installed")
+    } else {
+        print("  [✗] Go Compiler: NOT Found (Required for local DNS/reverse proxy)")
+    }
+    
+    // 3. Check State Directory
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let apcDir = home.appendingPathComponent(".apc")
+    let envExists = FileManager.default.fileExists(atPath: apcDir.path)
+    if envExists {
+        print("  [✓] Local State Folder (~/.apc): Initialized")
+    } else {
+        print("  [✗] Local State Folder (~/.apc): NOT Initialized (Run 'apc start' or launch ShibaStack app)")
+    }
+    
+    // 4. Check DNS Resolver Rule
+    let resolverExists = FileManager.default.fileExists(atPath: "/etc/resolver/apc.local")
+    if resolverExists {
+        print("  [✓] macOS DNS Resolver Rule (/etc/resolver/apc.local): Configured")
+    } else {
+        print("  [✗] macOS DNS Resolver Rule (/etc/resolver/apc.local): NOT Configured")
+    }
+    
+    print("--------------------------------------------------")
+    if swiftPath && goPath && envExists && resolverExists {
+        print("Everything is healthy! ShibaStack is ready to manage containers.")
+    } else {
+        print("Some dependencies are missing. Please launch the ShibaStack GUI application to automatically install and configure these components.")
+    }
+    print("--------------------------------------------------")
+}
+
+func checkCommandExists(_ command: String) -> Bool {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    task.arguments = [command]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    try? task.run()
+    task.waitUntilExit()
+    return task.terminationStatus == 0
 }
 
 main()
