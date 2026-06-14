@@ -55,6 +55,11 @@ public final class ContainerManager {
                     "2026-06-14 10:00:05 [info] Ready to serve HTTP traffic",
                     "2026-06-14 10:01:23 [info] GET / index.html 200 OK - Mozilla/5.0"
                 ]),
+                Container(id: "c_alpine_it_tools", name: "it-tools", image: "corentinth/it-tools:latest", state: "running", ports: ["8081:80"], cpuUsage: 0.5, memoryUsage: 54.3, logs: [
+                    "2026-06-14 11:15:00 [info] Starting IT-Tools server...",
+                    "2026-06-14 11:15:01 [info] Listening on HTTP port 80",
+                    "2026-06-14 11:15:03 [info] Ready to serve developer toolbox."
+                ]),
                 Container(id: "c_alpine_db", name: "postgres-db", image: "alpine-postgres:15", state: "running", ports: ["5432:5432"], cpuUsage: 0.4, memoryUsage: 112.5, logs: [
                     "2026-06-14 10:00:01 [info] Database system is ready to accept connections",
                     "2026-06-14 10:00:01 [info] listening on IPv4 address 0.0.0.0, port 5432",
@@ -76,6 +81,7 @@ public final class ContainerManager {
         } else {
             // Load default images
             images = [
+                ContainerImage(id: "img_it_tools", repository: "corentinth/it-tools", tag: "latest", size: "48.2 MB", created: "1 day ago"),
                 ContainerImage(id: "img_nginx", repository: "alpine-nginx", tag: "3.18", size: "18.4 MB", created: "2 days ago"),
                 ContainerImage(id: "img_postgres", repository: "alpine-postgres", tag: "15", size: "124.2 MB", created: "1 week ago"),
                 ContainerImage(id: "img_redis", repository: "alpine-redis", tag: "7.0", size: "32.1 MB", created: "3 weeks ago"),
