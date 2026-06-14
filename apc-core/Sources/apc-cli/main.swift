@@ -42,7 +42,7 @@ func main() {
     let args = CommandLine.arguments
     guard args.count > 1 else {
         printUsage()
-        return
+        exit(64) // Standard EX_USAGE exit code for missing command parameters
     }
     
     let command = args[1].lowercased()
@@ -186,6 +186,10 @@ func main() {
                 print("\(pad(dev.name, toWidth: 24)) \(pad(dev.vendorId, toWidth: 12)) \(pad(dev.productId, toWidth: 12)) \(pad(dev.serialNumber, toWidth: 16)) \(pad(dev.isAttached ? "YES" : "NO", toWidth: 10))")
             }
         case "attach":
+            guard vmManager.getVMState() == "running" else {
+                print("Error: The ShibaStack VM engine is not running. Start it with 'apc start' before attaching devices.")
+                exit(1)
+            }
             guard args.count > 3 else {
                 print("Error: Specify device ID to attach.")
                 exit(1)
@@ -198,11 +202,17 @@ func main() {
                     print("Successfully attached USB device: \(targetDev.name)")
                 } catch {
                     print("Failed to attach USB device: \(error.localizedDescription)")
+                    exit(1)
                 }
             } else {
                 print("Error: Device '\(devId)' not found in host USB scan.")
+                exit(1)
             }
         case "detach":
+            guard vmManager.getVMState() == "running" else {
+                print("Error: The ShibaStack VM engine is not running. Start it with 'apc start' before detaching devices.")
+                exit(1)
+            }
             guard args.count > 3 else {
                 print("Error: Specify device ID to detach.")
                 exit(1)
@@ -215,12 +225,15 @@ func main() {
                     print("Successfully detached USB device: \(targetDev.name)")
                 } catch {
                     print("Failed to detach USB device: \(error.localizedDescription)")
+                    exit(1)
                 }
             } else {
                 print("Error: Device '\(devId)' not found.")
+                exit(1)
             }
         default:
             print("Unknown USB command: \(subCommand)")
+            exit(1)
         }
         
     case "network":
@@ -297,9 +310,15 @@ func checkCommandExists(_ command: String) -> Bool {
     task.arguments = [command]
     let pipe = Pipe()
     task.standardOutput = pipe
-    try? task.run()
-    task.waitUntilExit()
-    return task.terminationStatus == 0
+    
+    do {
+        try task.run()
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    } catch {
+        print("[APC-Core] Warning: Failed to spawn '/usr/bin/which' process: \(error.localizedDescription)")
+        return false
+    }
 }
 
 main()

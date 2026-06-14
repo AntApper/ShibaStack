@@ -81,19 +81,32 @@ class GUIStateManager: ObservableObject {
     }
     
     func refreshAll() {
-        self.vmState = VMManager.shared.getVMState()
-        self.containers = ContainerManager.shared.getContainers()
-        self.images = ContainerManager.shared.getImages()
-        self.volumes = ContainerManager.shared.getVolumes()
-        self.usbDevices = USBManager.shared.scanDevices()
-        self.hardwareStats = ContainerManager.shared.getStats()
-        
-        // Auto-select first container if none selected
-        if selectedContainer == nil, let first = containers.first {
-            selectedContainer = first
-        } else if let selected = selectedContainer {
-            // Keep selection updated
-            selectedContainer = containers.first(where: { $0.id == selected.id })
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let state = VMManager.shared.getVMState()
+            let conts = ContainerManager.shared.getContainers()
+            let imgs = ContainerManager.shared.getImages()
+            let vols = ContainerManager.shared.getVolumes()
+            let usb = USBManager.shared.scanDevices()
+            let stats = ContainerManager.shared.getStats()
+            
+            DispatchQueue.main.async {
+                self.vmState = state
+                self.containers = conts
+                self.images = imgs
+                self.volumes = vols
+                self.usbDevices = usb
+                self.hardwareStats = stats
+                
+                // Auto-select first container if none selected
+                if self.selectedContainer == nil, let first = conts.first {
+                    self.selectedContainer = first
+                } else if let selected = self.selectedContainer {
+                    // Keep selection updated
+                    self.selectedContainer = conts.first(where: { $0.id == selected.id })
+                }
+            }
         }
     }
     
@@ -109,23 +122,28 @@ class GUIStateManager: ObservableObject {
     // Actions
     func toggleVM() {
         if vmState == "running" {
-            try? VMManager.shared.stopVM()
+            try? VMManager.shared.stopVM { [weak self] in
+                DispatchQueue.main.async {
+                    self?.refreshAll()
+                }
+            }
         } else {
             let currentConfig = VMConfig(allocatedCPUs: allocatedCPUs, allocatedMemoryGB: allocatedMemoryGB)
             VMManager.shared.saveVMConfig(currentConfig)
             try? VMManager.shared.startVM()
+            refreshAll()
         }
-        refreshAll()
     }
     
     func restartVM() {
-        try? VMManager.shared.stopVM()
         let currentConfig = VMConfig(allocatedCPUs: allocatedCPUs, allocatedMemoryGB: allocatedMemoryGB)
         VMManager.shared.saveVMConfig(currentConfig)
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            try? VMManager.shared.startVM()
-            self?.refreshAll()
+        try? VMManager.shared.stopVM { [weak self] in
+            DispatchQueue.main.async {
+                try? VMManager.shared.startVM()
+                self?.refreshAll()
+            }
         }
     }
     
@@ -602,8 +620,8 @@ struct ContainersDashboardView: View {
                             Divider()
                             
                             ScrollView {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    ForEach(selected.logs, id: \.self) { log in
+                                LazyVStack(alignment: .leading, spacing: 6) {
+                                    ForEach(Array(selected.logs.enumerated()), id: \.offset) { _, log in
                                         Text(log)
                                             .font(.system(.caption, design: .monospaced))
                                             .foregroundColor(.shibaCream)
@@ -620,18 +638,18 @@ struct ContainersDashboardView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             ScrollView {
                                 ScrollViewReader { scrollProxy in
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        ForEach(terminalLogs, id: \.self) { line in
+                                    LazyVStack(alignment: .leading, spacing: 6) {
+                                        ForEach(Array(terminalLogs.enumerated()), id: \.offset) { index, line in
                                             logLineColored(line)
                                                 .font(.system(.caption, design: .monospaced))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                                .id(line)
+                                                .id(index)
                                         }
                                     }
                                     .padding()
                                     .onChange(of: terminalLogs) { oldValue, newValue in
-                                        if let last = newValue.last {
-                                            scrollProxy.scrollTo(last, anchor: .bottom)
+                                        if !newValue.isEmpty {
+                                            scrollProxy.scrollTo(newValue.count - 1, anchor: .bottom)
                                         }
                                     }
                                 }

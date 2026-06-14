@@ -25,6 +25,13 @@ var (
 	routes          = make(map[string]int)
 	routesMu        sync.RWMutex
 	activeProxyPort = 8080 // Guard proxy port to prevent loopback routing loops
+
+	// Pool of UDP receive buffers to eliminate allocations during DNS packet reads
+	dnsBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 512)
+		},
+	}
 )
 
 func init() {
@@ -51,10 +58,9 @@ func main() {
 	startHTTPProxy()
 }
 
+// loadRoutes decodes the config file OUTSIDE the read/write lock to prevent
+// blocking active reverse proxy queries with slow file I/O operations.
 func loadRoutes() {
-	routesMu.Lock()
-	defer routesMu.Unlock()
-
 	file, err := os.Open(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -64,7 +70,10 @@ func loadRoutes() {
 			}}
 			data, _ := json.MarshalIndent(defaultCfg, "", "  ")
 			_ = os.WriteFile(configPath, data, 0644)
+
+			routesMu.Lock()
 			routes = defaultCfg.Routes
+			routesMu.Unlock()
 			return
 		}
 		log.Printf("Error reading config file: %v", err)
@@ -78,7 +87,9 @@ func loadRoutes() {
 		return
 	}
 
+	routesMu.Lock()
 	routes = cfg.Routes
+	routesMu.Unlock()
 	log.Printf("Loaded routes: %v", routes)
 }
 
@@ -102,7 +113,7 @@ func getTargetPort(host string) (int, bool) {
 	return port, exists
 }
 
-// startDNSServer runs a lightweight, zero-dependency DNS server resolving all *.apc.local to 127.0.0.1.
+// startDNSServer runs a concurrent, zero-dependency DNS server resolving all *.apc.local to 127.0.0.1.
 func startDNSServer() {
 	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:15353")
 	if err != nil {
@@ -123,91 +134,124 @@ func startDNSServer() {
 
 	log.Println("DNS Server listening on 127.0.0.1:15353 (resolving *.apc.local)")
 
-	buf := make([]byte, 512)
 	for {
-		n, raddr, err := conn.ReadFromUDP(buf)
+		// Acquire a byte slice from the pool to avoid heap allocations
+		buf := dnsBufPool.Get().([]byte)
+		// Reset boundary
+		b := buf[:512]
+
+		n, raddr, err := conn.ReadFromUDP(b)
 		if err != nil {
+			dnsBufPool.Put(buf)
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				break
+			}
 			log.Printf("DNS Read error: %v", err)
 			continue
 		}
 
-		if n < 12 {
-			continue // Invalid packet
+		// Spawn concurrent goroutine to parse the DNS query and send response.
+		// Hand off raw buffer and length safely.
+		go handleDNSQuery(conn, buf, n, raddr)
+	}
+}
+
+// handleDNSQuery parses and responds to incoming DNS queries ending in "apc.local" on a pooled buffer.
+func handleDNSQuery(conn *net.UDPConn, buf []byte, n int, raddr *net.UDPAddr) {
+	defer dnsBufPool.Put(buf)
+
+	if n < 12 {
+		return // Invalid packet length
+	}
+
+	// Basic DNS validation and parsing
+	// TxID: buf[0:2]
+	// Flags: buf[2:4]
+	// Questions: buf[4:6]
+	qdCount := int(buf[4])<<8 | int(buf[5])
+	if qdCount == 0 {
+		return
+	}
+
+	// Simple parsing of the queried domain name
+	domainParts := []string{}
+	offset := 12
+	for offset < n {
+		length := int(buf[offset])
+		if length == 0 {
+			offset++
+			break
 		}
-
-		// Basic DNS validation and parsing
-		// TxID: buf[0:2]
-		// Flags: buf[2:4]
-		// Questions: buf[4:6]
-		qdCount := int(buf[4])<<8 | int(buf[5])
-		if qdCount == 0 {
-			continue
+		if offset+1+length > n {
+			break
 		}
+		domainParts = append(domainParts, string(buf[offset+1:offset+1+length]))
+		offset += 1 + length
+	}
 
-		// Simple parsing of the queried domain name
-		domainParts := []string{}
-		offset := 12
-		for offset < n {
-			length := int(buf[offset])
-			if length == 0 {
-				offset++
-				break
-			}
-			if offset+1+length > n {
-				break
-			}
-			domainParts = append(domainParts, string(buf[offset+1:offset+1+length]))
-			offset += 1 + length
-		}
+	domain := strings.Join(domainParts, ".")
+	if !strings.HasSuffix(domain, "apc.local") {
+		return // Only answer for *.apc.local
+	}
 
-		domain := strings.Join(domainParts, ".")
-		if !strings.HasSuffix(domain, "apc.local") {
-			continue // Only answer for *.apc.local
-		}
+	// Construct DNS Response packet
+	response := make([]byte, 0, 512)
+	// Tx ID
+	response = append(response, buf[0:2]...)
+	// Standard Response Flags: Response, No error (0x8180)
+	response = append(response, 0x81, 0x80)
+	// Questions Count (1)
+	response = append(response, 0x00, 0x01)
+	// Answer Count (1)
+	response = append(response, 0x00, 0x01)
+	// Authority RRs, Additional RRs (0)
+	response = append(response, 0x00, 0x00, 0x00, 0x00)
 
-		// Construct DNS Response packet
-		response := make([]byte, 0, 512)
-		// Tx ID
-		response = append(response, buf[0:2]...)
-		// Standard Response Flags: Response, No error (0x8180)
-		response = append(response, 0x81, 0x80)
-		// Questions Count (1)
-		response = append(response, 0x00, 0x01)
-		// Answer Count (1)
-		response = append(response, 0x00, 0x01)
-		// Authority RRs, Additional RRs (0)
-		response = append(response, 0x00, 0x00, 0x00, 0x00)
+	// Copy Question Section
+	questionLen := offset - 12
+	// Question type & class (4 bytes at the end of the question section)
+	if offset+4 <= n {
+		questionLen += 4
+	}
+	response = append(response, buf[12:12+questionLen]...)
 
-		// Copy Question Section
-		questionLen := offset - 12
-		// Question type & class (4 bytes at the end of the question section)
-		if offset+4 <= n {
-			questionLen += 4
-		}
-		response = append(response, buf[12:12+questionLen]...)
+	// Append Answer Section (A Record pointing to 127.0.0.1)
+	// Name pointer (offset pointing to the name in the question section, usually 0xc00c)
+	response = append(response, 0xc, 0x0c)
+	// Type A (0x0001), Class IN (0x0001)
+	response = append(response, 0x00, 0x01, 0x00, 0x01)
+	// TTL (30 seconds)
+	response = append(response, 0x00, 0x00, 0x00, 0x1e)
+	// Data Length (4 bytes for IPv4)
+	response = append(response, 0x00, 0x04)
+	// IP: 127.0.0.1
+	response = append(response, 127, 0, 0, 1)
 
-		// Append Answer Section (A Record pointing to 127.0.0.1)
-		// Name pointer (offset pointing to the name in the question section, usually 0xc00c)
-		response = append(response, 0xc, 0x0c)
-		// Type A (0x0001), Class IN (0x0001)
-		response = append(response, 0x00, 0x01, 0x00, 0x01)
-		// TTL (30 seconds)
-		response = append(response, 0x00, 0x00, 0x00, 0x1e)
-		// Data Length (4 bytes for IPv4)
-		response = append(response, 0x00, 0x04)
-		// IP: 127.0.0.1
-		response = append(response, 127, 0, 0, 1)
-
-		_, err = conn.WriteToUDP(response, raddr)
-		if err != nil {
-			log.Printf("DNS Write error: %v", err)
-		}
+	_, err := conn.WriteToUDP(response, raddr)
+	if err != nil {
+		log.Printf("DNS Write error: %v", err)
 	}
 }
 
 // startHTTPProxy runs an HTTP reverse proxy that routes requests based on the Host header.
 func startHTTPProxy() {
+	// Custom optimized transport to avoid default connection limit bottleneck (2 idle connections/host)
+	customTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second, // Timeout to connect to the backend container
+			KeepAlive: 30 * time.Second, // TCP keep-alives on the backend socket
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   100, // Crucial performance fix for high-throughput container networking
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
 	proxy := &httputil.ReverseProxy{
+		Transport: customTransport,
 		Director: func(req *http.Request) {
 			host := req.Host
 			port, found := getTargetPort(host)
@@ -281,8 +325,13 @@ func startHTTPProxy() {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// Explicit server timeouts configured to prevent resource leak and Slowloris vulnerability vectors
 	server := &http.Server{
-		Handler: proxyHandler,
+		Handler:           proxyHandler,
+		ReadHeaderTimeout: 10 * time.Second,  // Stop Slowloris header starvation
+		ReadTimeout:       30 * time.Second,  // Keep overall socket duration bounded
+		WriteTimeout:      30 * time.Second,  // Keep overall write duration bounded
+		IdleTimeout:       120 * time.Second, // Manage keep-alive sockets carefully
 	}
 	if err := server.Serve(listener); err != nil {
 		log.Fatalf("HTTP Proxy server failed to serve: %v", err)

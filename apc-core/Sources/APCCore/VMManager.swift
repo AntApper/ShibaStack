@@ -4,8 +4,35 @@ import Virtualization
 public final class VMManager {
     public static nonisolated(unsafe) let shared = VMManager()
     
-    private var virtualMachine: VZVirtualMachine?
-    private var isMockMode: Bool = true
+    private let lock = NSLock()
+    private var _virtualMachine: VZVirtualMachine?
+    private var _isMockMode: Bool = true
+    
+    private var isMockMode: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _isMockMode
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _isMockMode = newValue
+        }
+    }
+    
+    private var virtualMachine: VZVirtualMachine? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _virtualMachine
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _virtualMachine = newValue
+        }
+    }
     
     private var stateFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -19,9 +46,15 @@ public final class VMManager {
     
     public func loadVMConfig() -> VMConfig {
         let decoder = JSONDecoder()
-        if let data = try? Data(contentsOf: configFileURL),
-           let config = try? decoder.decode(VMConfig.self, from: data) {
-            return config
+        do {
+            if FileManager.default.fileExists(atPath: configFileURL.path) {
+                let data = try Data(contentsOf: configFileURL)
+                let config = try decoder.decode(VMConfig.self, from: data)
+                return config
+            }
+        } catch {
+            print("[APC-Core] Warning: Failed to load VM config from \(configFileURL.path): \(error.localizedDescription)")
+            print("[APC-Core] Reverting to default VM config.")
         }
         let defaultConfig = VMConfig(allocatedCPUs: 2, allocatedMemoryGB: 4)
         saveVMConfig(defaultConfig)
@@ -31,8 +64,13 @@ public final class VMManager {
     public func saveVMConfig(_ config: VMConfig) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(config) {
-            try? data.write(to: configFileURL, options: .atomic)
+        do {
+            let dir = configFileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try encoder.encode(config)
+            try data.write(to: configFileURL, options: .atomic)
+        } catch {
+            print("[APC-Core] Error saving VM config: \(error.localizedDescription)")
         }
     }
     
@@ -44,9 +82,19 @@ public final class VMManager {
     }
     
     private func detectEnvironment() {
-        // In local development or agent sandboxes, we fallback to Mock virtualization.
-        // We can test if we are running in an environment with the virtualization entitlement.
+        #if os(macOS)
+        // Check if the CPU supports hardware-assisted virtualization.
+        // If supported, we start with isMockMode = false to attempt real virtualization.
+        // If validation or boot fails (e.g. missing entitlements or kernel files),
+        // we gracefully fall back to mock mode.
+        if VZVirtualMachine.isSupported {
+            isMockMode = false
+        } else {
+            isMockMode = true
+        }
+        #else
         isMockMode = true
+        #endif
     }
     
     /// Configures and starts the Virtual Machine
@@ -104,6 +152,7 @@ public final class VMManager {
             print("[APC-Core] VM configuration validation failed: \(error.localizedDescription)")
             print("[APC-Core] Gracefully falling back to high-fidelity Mock VM mode...")
             isMockMode = true
+            virtualMachine = nil
             try? "running".write(to: stateFileURL, atomically: true, encoding: .utf8)
             return
         }
@@ -112,14 +161,17 @@ public final class VMManager {
         let vm = VZVirtualMachine(configuration: config)
         self.virtualMachine = vm
         
-        vm.start { result in
+        vm.start { [weak self] result in
+            guard let self = self else { return }
             switch result {
             case .success:
                 print("[APC-Core] Native Virtualization VM started successfully!")
+                try? "running".write(to: self.stateFileURL, atomically: true, encoding: .utf8)
             case .failure(let error):
                 print("[APC-Core] VM failed to boot: \(error.localizedDescription)")
                 print("[APC-Core] Switching to high-fidelity Mock VM mode...")
                 self.isMockMode = true
+                self.virtualMachine = nil
                 try? "running".write(to: self.stateFileURL, atomically: true, encoding: .utf8)
             }
         }
@@ -127,58 +179,61 @@ public final class VMManager {
     }
     
     /// Stops the Virtual Machine
-    public func stopVM() throws {
+    public func stopVM(completion: (() -> Void)? = nil) throws {
         if isMockMode {
             try? "stopped".write(to: stateFileURL, atomically: true, encoding: .utf8)
             print("[APC-Core] Stopping Mock Virtualization Engine...")
+            completion?()
             return
         }
         
         #if os(macOS)
         guard let vm = virtualMachine else {
+            completion?()
             return
         }
         
-        vm.stop { error in
+        vm.stop { [weak self] error in
+            guard let self = self else { return }
             if let error = error {
                 print("[APC-Core] Error stopping VM: \(error.localizedDescription)")
             } else {
                 print("[APC-Core] VM stopped successfully.")
                 self.virtualMachine = nil
+                try? "stopped".write(to: self.stateFileURL, atomically: true, encoding: .utf8)
             }
+            completion?()
         }
         #endif
     }
     
     /// Get current state of the VM
     public func getVMState() -> String {
-        if isMockMode {
-            if let state = try? String(contentsOf: stateFileURL, encoding: .utf8) {
-                return state.trimmingCharacters(in: .whitespacesAndNewlines)
+        // If we have an active VM instance in this process, use its real-time state.
+        #if os(macOS)
+        if let vm = virtualMachine {
+            switch vm.state {
+            case .stopped: return "stopped"
+            case .running: return "running"
+            case .paused: return "paused"
+            case .starting: return "starting"
+            case .stopping: return "stopping"
+            case .pausing: return "pausing"
+            case .resuming: return "resuming"
+            case .saving: return "saving"
+            case .restoring: return "restoring"
+            case .error: return "error"
+            @unknown default: return "unknown"
             }
-            return "stopped"
+        }
+        #endif
+        
+        // Otherwise, fall back to reading the persisted state file (shared across CLI/daemon/GUI processes).
+        if let state = try? String(contentsOf: stateFileURL, encoding: .utf8) {
+            return state.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         
-        #if os(macOS)
-        guard let vm = virtualMachine else {
-            return "stopped"
-        }
-        switch vm.state {
-        case .stopped: return "stopped"
-        case .running: return "running"
-        case .paused: return "paused"
-        case .starting: return "starting"
-        case .stopping: return "stopping"
-        case .pausing: return "pausing"
-        case .resuming: return "resuming"
-        case .saving: return "saving"
-        case .restoring: return "restoring"
-        case .error: return "error"
-        @unknown default: return "unknown"
-        }
-        #else
         return "stopped"
-        #endif
     }
     
     /// Retrive the underlying real VM instance
