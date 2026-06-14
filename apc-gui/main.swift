@@ -1117,6 +1117,82 @@ struct NetworkDashboardView: View {
                 .foregroundColor(.secondary)
                 .padding(.horizontal)
             
+            // Host Network Services Status Panel
+            HStack(spacing: 16) {
+                // DNS Resolver status
+                HStack(spacing: 12) {
+                    Image(systemName: "globe.americas.fill")
+                        .foregroundColor(.green)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DNS Server")
+                            .font(.headline)
+                        Text("Port 15353 (UDP)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text("ACTIVE")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.15))
+                        .foregroundColor(.green)
+                        .cornerRadius(4)
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+                
+                // Proxy status
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
+                        .foregroundColor(.green)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reverse Proxy")
+                            .font(.headline)
+                        Text("Port 80/8080 (TCP)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text("ACTIVE")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.15))
+                        .foregroundColor(.green)
+                        .cornerRadius(4)
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+            }
+            .padding(.horizontal)
+            
+            // Loop Guard Shield Banner (Informing user of loopback safety)
+            HStack(spacing: 12) {
+                Image(systemName: "shield.checkered")
+                    .foregroundColor(.teal)
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Proxy Loopback Loop Guard Active")
+                        .font(.headline)
+                    Text("Protects ShibaStack from self-referential port forwarding loops. Mappings onto active listener ports are automatically intercepted with a standard HTTP 508 Loop Detected status.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+            .padding()
+            .background(Color.teal.opacity(0.08))
+            .cornerRadius(10)
+            .padding(.horizontal)
+            
             // Add custom port forwarding rule (Matches OrbStack networking tab)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {

@@ -74,11 +74,23 @@ Common pitfalls include:
 - Passing Swift strings to C format string specifiers (like `%s`), causing segmentation faults in `strlen` (resolved in this project by using manual Swift padding helpers).
 - Entitlement conflicts. Running real `VZVirtualMachine` virtualization requires the `com.apple.security.virtualization` entitlement. In sandbox/local debugging without certificates, the codebase gracefully redirects to a fully simulated mock engine.
 
-### 4.2 Inspecting Application Logs
+### 4.2 Inspecting Application Logs & Settings
 Review active configuration registries in:
+- VM Resource allocations: `~/.apc/config.json`
 - VM/Container Registry: `~/.apc/containers.json`
 - Local Router Entries: `~/.apc/routing.json`
 - State File: `~/.apc/vm_state`
+
+### 4.3 Programmatic Health Checks (apc doctor)
+Developers can run system-level dependency checks directly from their terminal using:
+```bash
+./build/ShibaStack.app/Contents/Resources/bin/apc doctor
+```
+This utility validates:
+1. Xcode Command Line Tools availability.
+2. Go Compiler status.
+3. Path configurations and sandbox initialization of `~/.apc/`.
+4. macOS DNS Resolver Delegation rules under `/etc/resolver/apc.local`.
 
 ---
 

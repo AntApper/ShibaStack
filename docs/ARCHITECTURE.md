@@ -69,6 +69,14 @@ The networking helper runs a TCP reverse proxy listening on port `8080` (with at
 - It periodically parses `~/.apc/routing.json`, which tracks container domains and their guest ports.
 - When a developer accesses `http://web-app.apc.local`, the proxy reads the HTTP `Host` header, queries the routing registry, and proxies TCP traffic directly to the guest port.
 
+#### 2.2.1 Multi-Port Routing
+ShibaStack natively supports mapping multiple guest ports per container. 
+- The primary port maps to: `container-name.apc.local`
+- All secondary ports are automatically mapped to: `container-name-<port>.apc.local`
+
+#### 2.2.2 Loopback Loop Guard (Anti-Routing Loops)
+To prevent infinite request amplification loops where the proxy requests traffic from itself on port `8080`, the proxy utilizes a loop-detection middleware. Mappings resolving directly to the active proxy listener port are automatically intercepted and terminated with a standard HTTP `508 Loop Detected` status.
+
 ---
 
 ## 3. Communication Protocols & VSOCK
@@ -77,3 +85,15 @@ For low-level hypervisor-to-guest communications, APC utilizes `VZVirtioSocketCo
 - The host opens a listening VSOCK socket on a designated port.
 - A daemon (`vminitd`) running inside the Alpine guest connects to the host socket.
 - This secure channel is utilized to forward terminal inputs, exchange statistics, and trigger container launches without opening standard network ports to external interfaces.
+
+---
+
+## 4. Persistent Configuration & State Management (config.json)
+
+ShibaStack unifies hypervisor settings across CLI commands and SwiftUI panels using a centralized JSON configuration database.
+- **Location:** State configurations reside at `~/.apc/config.json`.
+- **Properties:**
+  - `allocatedCPUs`: Count of CPU cores to allocate to the virtual machine.
+  - `allocatedMemoryGB`: In-memory limit for memory allocations in GB.
+- **CLI Commands:** The `apc config` command suite reads and writes directly to this state database, ensuring complete resource control.
+- **GUI Integration:** Sliders dynamically modify in-memory resource allocations and commit them to `config.json` upon booting/restarting the virtual machine.
