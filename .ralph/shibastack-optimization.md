@@ -41,7 +41,7 @@ Optimize and expand ShibaStack to achieve feature parity with OrbStack using App
 - [x] Loop 11-15: Advanced User-Space Networking (Multi-port maps [✓], automatic domain registration [✓], proxy loop-back guards [✓])
 - [x] Loop 16-20: Apple-Style GUI Dashboard (Sidebars [✓], metrics [✓], list views [✓], menu-bar integration [✓], custom branded Shiba template icon and OrbStack-parity features [✓])
 - [x] Loop 21-23: Real Guest Execution Spine (Booting netboot guest [✓], vminitd VSOCK command dispatching [✓], real container run/exec [✓])
-- [ ] Loop 24-25: VSOCK Container Console (PTY multiplexing [✓], real-time command forwarding to guest agent [✓])
+- [x] Loop 24-25: VSOCK Container Console (PTY multiplexing [✓], real-time command forwarding to guest agent [✓])
 - [ ] Loop 26-30: Bulletproof USB Passthrough (IOKit scanning [✓], dynamic VZXHCI controller attachments [✓], hotplug error handling [✓])
 - [ ] Loop 31-35: Local UNIX Socket / Docker CLI Bridge (Translate Docker commands [✓], map /var/run/docker.sock to VM guest [✓])
 - [ ] Loop 36-40: Image & Volume Visual Explorer (Pull, push, prune UI, VirtioFS directory tree navigation [✓])

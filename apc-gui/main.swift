@@ -801,7 +801,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .images: return "photo.fill"
         case .storage: return "internaldrive.fill"
         case .network: return "network"
-        case .usb: return "usb"
+        case .usb: return "point.3.connected.trianglepath.dotted"
         case .settings: return "gearshape.fill"
         }
     }
@@ -1059,6 +1059,17 @@ struct ContainersDashboardView: View {
                             // State Action buttons (OrbStack style top action headers with Delete action)
                             HStack(spacing: 8) {
                                 if selected.state == "running" {
+                                    if !selected.ports.isEmpty {
+                                        Button(action: {
+                                            let url = state.getContainerURL(selected)
+                                            NSWorkspace.shared.open(url)
+                                        }) {
+                                            Label("Open Site", systemImage: "safari")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(.shibaOrange)
+                                    }
+                                    
                                     Button(action: { state.stopContainer(selected.id) }) {
                                         Label("Stop", systemImage: "stop.fill")
                                     }
@@ -1480,6 +1491,7 @@ struct CreateContainerSheet: View {
     @State private var name = ""
     @State private var image = "alpine"
     @State private var ports = "80:8080"
+    @State private var selectedImageIndex = 0
     
     // Validation messages
     @State private var nameError: String? = nil
@@ -1515,10 +1527,32 @@ struct CreateContainerSheet: View {
                 
                 // Image input
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Image Tag:")
+                    Text("Container Image:")
                         .font(.headline)
-                    TextField("e.g. alpine:latest, nginx:3.18", text: $image)
-                        .textFieldStyle(.roundedBorder)
+                    
+                    if !state.images.isEmpty {
+                        Picker("Select Pulled Image:", selection: $selectedImageIndex) {
+                            ForEach(0..<state.images.count, id: \.self) { idx in
+                                let img = state.images[idx]
+                                Text("\(img.repository):\(img.tag)").tag(idx)
+                            }
+                            Text("Enter custom image...").tag(-1)
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedImageIndex) { _, newValue in
+                            if newValue != -1 {
+                                let img = state.images[newValue]
+                                image = "\(img.repository):\(img.tag)"
+                            } else {
+                                image = ""
+                            }
+                        }
+                    }
+                    
+                    if state.images.isEmpty || selectedImageIndex == -1 {
+                        TextField("e.g. alpine:latest, nginx:alpine", text: $image)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
                 
                 // Port mapping input
@@ -1563,6 +1597,16 @@ struct CreateContainerSheet: View {
         }
         .padding()
         .frame(width: 420, height: 380)
+        .onAppear {
+            if !state.images.isEmpty {
+                let img = state.images[0]
+                image = "\(img.repository):\(img.tag)"
+                selectedImageIndex = 0
+            } else {
+                selectedImageIndex = -1
+                image = ""
+            }
+        }
     }
     
     private func validateName(_ value: String) {
