@@ -16,16 +16,9 @@ import (
 	"time"
 )
 
-// Config represents the dynamic routing configuration.
-type Config struct {
-	Routes map[string]int `json:"routes"` // Map of host (e.g., "web-app.apc.local") to port (e.g., 8080)
-}
-
 var (
-	configPath      string
-	routes          = make(map[string]int)
-	routesMu        sync.RWMutex
-	activeProxyPort = 8080 // Guard proxy port to prevent loopback routing loops
+	// registry owns host -> port resolution and the loop guard (see routing.go).
+	registry *RoutingRegistry
 
 	// Pool of UDP receive buffers to eliminate allocations during DNS packet reads
 	dnsBufPool = sync.Pool{
@@ -42,15 +35,15 @@ func init() {
 	}
 	configDir := filepath.Join(home, ".apc")
 	_ = os.MkdirAll(configDir, 0755)
-	configPath = filepath.Join(configDir, "routing.json")
+	registry = NewRoutingRegistry(filepath.Join(configDir, "routing.json"))
 }
 
 func main() {
 	log.Println("Starting APC Network & DNS Resolver...")
 
 	// Load initial routes and start config watcher
-	loadRoutes()
-	go watchConfig()
+	registry.Load()
+	go registry.Watch()
 
 	// Start DNS Server (UDP port 15353)
 	go startDNSServer()
@@ -60,69 +53,6 @@ func main() {
 
 	// Start HTTP Reverse Proxy (TCP port 8080 with attempt on 80)
 	startHTTPProxy()
-}
-
-// loadRoutes decodes the config file OUTSIDE the read/write lock to prevent
-// blocking active reverse proxy queries with slow file I/O operations.
-func loadRoutes() {
-	file, err := os.Open(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Write default empty configuration
-			defaultCfg := Config{Routes: map[string]int{
-				"demo.apc.local": 8080,
-			}}
-			data, _ := json.MarshalIndent(defaultCfg, "", "  ")
-			_ = os.WriteFile(configPath, data, 0644)
-
-			routesMu.Lock()
-			routes = defaultCfg.Routes
-			routesMu.Unlock()
-			return
-		}
-		log.Printf("Error reading config file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	var cfg Config
-	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
-		log.Printf("Error decoding config JSON: %v", err)
-		return
-	}
-
-	routesMu.Lock()
-	routes = cfg.Routes
-	routesMu.Unlock()
-	log.Printf("Loaded routes: %v", routes)
-}
-
-func watchConfig() {
-	var lastModTime time.Time
-	for {
-		time.Sleep(1 * time.Second)
-		info, err := os.Stat(configPath)
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(lastModTime) {
-			lastModTime = info.ModTime()
-			loadRoutes()
-		}
-	}
-}
-
-func getTargetPort(host string) (int, bool) {
-	routesMu.RLock()
-	defer routesMu.RUnlock()
-
-	// Strip port from host if present
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-
-	port, exists := routes[host]
-	return port, exists
 }
 
 // startDNSServer runs a concurrent, zero-dependency DNS server resolving all *.apc.local to 127.0.0.1.
@@ -266,7 +196,7 @@ func startHTTPProxy() {
 		Transport: customTransport,
 		Director: func(req *http.Request) {
 			host := req.Host
-			port, found := getTargetPort(host)
+			port, found := registry.Lookup(host)
 			if !found {
 				// Default fallback port if route is unknown
 				port = 8080
@@ -318,9 +248,9 @@ func startHTTPProxy() {
 	}
 
 	if strings.HasSuffix(serverAddr, ":80") {
-		activeProxyPort = 80
+		registry.SetProxyPort(80)
 	} else {
-		activeProxyPort = 8080
+		registry.SetProxyPort(8080)
 	}
 
 	log.Printf("HTTP Reverse Proxy successfully listening on %s (Loop Guard Active)", serverAddr)
@@ -328,10 +258,9 @@ func startHTTPProxy() {
 	// Wrap proxy with a loop detection handler
 	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
-		port, found := getTargetPort(host)
-		if found && port == activeProxyPort {
+		if registry.WouldLoop(host) {
 			w.WriteHeader(http.StatusLoopDetected) // 508 Loop Detected
-			fmt.Fprintf(w, "APC Proxy Gateway Error: Loopback routing loop detected. Host %q maps directly to proxy listening port %d.\n", host, port)
+			fmt.Fprintf(w, "APC Proxy Gateway Error: Loopback routing loop detected. Host %q maps directly to proxy listening port %d.\n", host, registry.ProxyPort())
 			return
 		}
 
@@ -521,9 +450,12 @@ func handleContainersJSON(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		statusStr := "Stopped"
+		// Apple's `container` CLI (list/inspect) exposes no creation or
+		// start timestamp, so we cannot compute a real uptime. Report an
+		// honest status string without a fabricated duration.
+		statusStr := "Exited"
 		if strings.ToLower(c.Status) == "running" {
-			statusStr = "Up 15 minutes"
+			statusStr = "Up"
 		}
 
 		displayImage := c.Configuration.Image.Reference

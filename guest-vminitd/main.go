@@ -11,6 +11,10 @@ import (
 )
 
 // Command represents an incoming execution command over VSOCK.
+//
+// This is the Go owner of the host/guest wire contract. Its Swift counterpart is
+// GuestCommand/GuestResponse in apc-core/Sources/APCCore/GuestProtocol.swift —
+// field names and the newline-delimited-JSON framing must stay in sync.
 type Command struct {
 	Action string   `json:"action"` // "run", "stop", "ps", "exec"
 	Name   string   `json:"name,omitempty"`

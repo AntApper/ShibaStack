@@ -25,7 +25,7 @@ cp ShibaStack.icns build/ShibaStack.app/Contents/Resources/ShibaStack.icns
 
 # 2. Compile Go Networking helper
 echo "Compiling apc-network (Go DNS & Reverse Proxy)..."
-CGO_ENABLED=0 go build -ldflags="-s -w" -o build/ShibaStack.app/Contents/Resources/bin/apc-network apc-network/main.go
+(cd apc-network && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../build/ShibaStack.app/Contents/Resources/bin/apc-network .)
 
 echo "Compiling guest-vminitd (Go Guest VM Agent)..."
 (cd guest-vminitd && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../build/ShibaStack.app/Contents/Resources/bin/guest-vminitd .)
