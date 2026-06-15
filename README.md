@@ -8,6 +8,12 @@
   user-space DNS + reverse proxy, and a Docker-CLI-compatible socket.
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/license-BSL%201.1-E06D3A.svg" alt="License: BSL 1.1" />
+  <img src="https://img.shields.io/badge/platform-Apple%20Silicon%20·%20macOS%2015%2B-1C1C1E.svg" alt="Apple Silicon, macOS 15+" />
+  <img src="https://img.shields.io/badge/engine-Apple%20container-EAA83A.svg" alt="Apple container runtime" />
+</p>
+
 ---
 
 ShibaStack is a native macOS app and CLI suite for managing Linux containers on Apple Silicon using **Apple's own `container` runtime** — no Docker daemon required. It adds a polished SwiftUI dashboard and menu-bar app, a zero-sudo user-space network layer that gives every container a friendly `*.apc.local` domain, and a Docker-API-compatible socket so existing Docker tooling can talk to the Apple-container engine.
@@ -106,4 +112,4 @@ apc prune
 
 ## License
 
-See [`LICENSE`](LICENSE). _(Being finalized — source-available, with a path to a fully open license over time.)_
+ShibaStack is **source-available** under the [Business Source License 1.1](LICENSE): you may use, modify, and self-host it freely, including in production. The only reserved use is offering it to third parties as a competing commercial or hosted container-management product/service. Each released version automatically converts to the **Apache License 2.0** on its Change Date (2030-06-14).

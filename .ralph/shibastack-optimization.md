@@ -192,8 +192,8 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   1. **Branded assets via nanobanana MCP** — generated a README hero banner + app logo matching docs/BRANDING.md (Shiba mascot, orange #E06D3A / cream #F7EAD3 / charcoal #1C1C1E / gold). Saved to docs/assets/ (banner.png, banner-alt.png, logo.png). (First attempt blocked by an expired API key; user renewed it and regen succeeded.)
   2. **Honest README rewrite** — replaced the inaccurate README (claimed working USB passthrough, wrong app/DMG names, wrong clone URL, overstated the VM). Now: banner, accurate feature list (real OCI/cgroup stats/streaming logs/exec/inspect/networking), an explicit "engine is only Apple container; Docker = registry + compat socket" note, an "Honest status" section on the VM-entitlement + USB limits, correct build/CLI/structure.
   3. **GitHub repo description set** (was blank) via gh.
-  - **License: PENDING user pick.** Recommended BSL 1.1 (source-available, converts to Apache 2.0). For reference: OpenStack=Apache 2.0; OrbStack=fully proprietary. README links LICENSE with a "being finalized" note; LICENSE file to be added once chosen.
-- **Backlog (next iterations):** add the chosen LICENSE + README badge; VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build UI.
+  4. **License chosen: BSL 1.1** (user picked it over Apache 2.0 — briefly considered Apache but nothing was committed for it). Canonical BUSL-1.1 template (SPDX) with parameters: Licensor=AntApper, Change Date=2030-06-14, Change License=Apache 2.0, Additional Use Grant allows all use incl. production except offering a competing commercial/hosted container-management product. Added LICENSE + README badge + accurate License section.
+- **Backlog (next iterations):** VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build UI.
 
 ## Reflection Checkpoint (Loop 20/100)
 
