@@ -184,7 +184,11 @@ class GUIStateManager: ObservableObject {
     @Published var volumes: [Volume] = []
     @Published var usbDevices: [USBDevice] = []
     @Published var hardwareStats = APCHardwareStats(cpuUsage: 0.0, memoryUsage: 0.0, maxMemory: 4096.0)
-    
+
+    // Live per-container stats (real cgroup samples), keyed by container id.
+    @Published var liveStatsById: [String: LiveContainerStats] = [:]
+    private var statsTimer: Timer?
+
     // Hardware configuration allocations
     @Published var allocatedCPUs: Int = 2
     @Published var allocatedMemoryGB: Int = 4
@@ -282,6 +286,27 @@ class GUIStateManager: ObservableObject {
             DispatchQueue.main.async {
                 self?.refreshAll()
             }
+        }
+        // Sample live per-container cgroup stats on a steady 3s cadence (clean CPU% deltas).
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            self?.sampleLiveStats()
+        }
+    }
+
+    private func sampleLiveStats() {
+        let running = containers.filter { $0.state == "running" }
+        guard !running.isEmpty else {
+            if !liveStatsById.isEmpty { liveStatsById = [:] }
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            var result: [String: LiveContainerStats] = [:]
+            for container in running {
+                if let stats = ContainerManager.shared.liveStats(id: container.id, cores: container.cpuCores) {
+                    result[container.id] = stats
+                }
+            }
+            DispatchQueue.main.async { self.liveStatsById = result }
         }
     }
     
@@ -791,6 +816,7 @@ class GUIStateManager: ObservableObject {
     
     deinit {
         timer?.invalidate()
+        statsTimer?.invalidate()
     }
 }
 
@@ -969,8 +995,6 @@ struct ContainersDashboardView: View {
     @State private var detailInfo: ContainerInfo? = nil
 
     // Live per-container resource sample (real, from cgroup via the runtime)
-    @State private var liveStats: LiveContainerStats? = nil
-
     // Live-streamed log lines (real `container logs -f`) for the running container
     @State private var streamedLogs: [String] = []
 
@@ -1009,12 +1033,13 @@ struct ContainersDashboardView: View {
                         }
                         Spacer()
                         
-                        // Inline allocated-resource indicators (real values from the runtime)
+                        // Inline live resource indicators (real cgroup sample; falls back to allocated)
                         if cont.state == "running" {
+                            let live = state.liveStatsById[cont.id]
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("\(cont.cpuCores) vCPU")
+                                Text(live.map { String(format: "%.1f%% CPU", $0.cpuPercent) } ?? "\(cont.cpuCores) vCPU")
                                     .font(.system(size: 10, design: .monospaced))
-                                Text(formatMemoryLimit(cont.memoryLimitMB))
+                                Text(live.map { memUsedString($0.memoryBytes) } ?? formatMemoryLimit(cont.memoryLimitMB))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(.secondary)
                             }
@@ -1123,10 +1148,11 @@ struct ContainersDashboardView: View {
 
                     // Live resource strip (real cgroup sample for the running container)
                     if selected.state == "running" {
+                        let live = state.liveStatsById[selected.id]
                         HStack(spacing: 18) {
-                            Label(liveStats.map { String(format: "%.1f%% CPU", $0.cpuPercent) } ?? "— CPU",
+                            Label(live.map { String(format: "%.1f%% CPU", $0.cpuPercent) } ?? "— CPU",
                                   systemImage: "cpu")
-                            Label(liveStats.map { "\(memUsedString($0.memoryBytes)) / \(formatMemoryLimit(selected.memoryLimitMB))" } ?? "— RAM",
+                            Label(live.map { "\(memUsedString($0.memoryBytes)) / \(formatMemoryLimit(selected.memoryLimitMB))" } ?? "— RAM",
                                   systemImage: "memorychip")
                             Text("\(selected.cpuCores) vCPU allocated")
                                 .foregroundColor(.secondary)
@@ -1147,20 +1173,7 @@ struct ContainersDashboardView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
                     .padding(.bottom, 8)
-                    .task(id: selected.id) {
-                        // Live cgroup sampling loop for the selected running container.
-                        liveStats = nil
-                        guard selected.state == "running" else { return }
-                        while !Task.isCancelled {
-                            let stats = await Task.detached(priority: .utility) {
-                                ContainerManager.shared.liveStats(id: selected.id, cores: selected.cpuCores)
-                            }.value
-                            if Task.isCancelled { break }
-                            liveStats = stats
-                            try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        }
-                    }
-                    
+
                     Divider()
                     
                     // Dynamic detail panel views

@@ -197,7 +197,10 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
 - **Iteration P9 (honesty):**
   1. **Kernel-stub fallback removed** — on download failure the onboarding wrote fake `"Mock Alpine Kernel stub"` / `"Mock Initrd stub"` text files (un-bootable) and claimed it wrote "high-fidelity offline stubs." Now it writes nothing fake, removes the failed partial download, and shows an honest "download failed — no boot images written" error.
   2. **VirtioFS labels truthful** — replaced the fabricated guest path "Mapped Path inside Guest VM: /host/Users" with the real config (VMManager shares `/Users` via VirtioFS tag `"users"`), noting it's active when the VM is running. Host path /Users is the real configured share.
-- **Backlog (next iterations):** results of the P9 final honesty-sweep agent (pending); live stats in container LIST; image build (`container build`) UI; per-container actions polish.
+- **Iteration P10:**
+  1. **Final honesty sweep = CLEAN** — a parallel Explore agent swept the entire GUI for remaining fabricated/hardcoded/no-op data and found ZERO material issues. All UI data now flows from real managers (ContainerManager/VMManager/USBManager/NetworkStatus). The "zero mocking" mandate is satisfied across the GUI surface.
+  2. **Live stats in the container LIST** — added a centralized 3s sampler in GUIStateManager (`liveStatsById`, real cgroup samples for all running containers via ContainerManager.liveStats). The list rows now show real live CPU%/memory (falling back to allocated). Refactored the detail view to read from the same central store and removed its duplicate per-selection `.task` sampler (eliminates double-sampling interference on CPU% deltas). Verified: 2 containers sampled concurrently with real distinct live memory (42.1 / 66.6 MB) + real CPU deltas.
+- **Backlog (next iterations):** image build (`container build -t -f`) UI; per-container actions polish; consider next branded DMG release after the image-build feature lands (accumulate a few feature iterations first).
 
 ## Reflection Checkpoint (Loop 20/100)
 
