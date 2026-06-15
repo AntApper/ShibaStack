@@ -143,3 +143,21 @@ final class ContainerDomainTests: XCTestCase {
         XCTAssertEqual(routes["web-5050.apc.local"], 5050)   // later ports get suffixed
     }
 }
+
+/// routing.json is read by the Go reverse proxy as `{ "routes": { host: port } }`.
+/// Lock the Swift writer's schema to that shape so the two stay in sync.
+final class RoutingConfigTests: XCTestCase {
+
+    func testEncodesToGoSchemaAndRoundTrips() throws {
+        let config = RoutingConfig(routes: ["web.apc.local": 8081, "db.apc.local": 5432])
+        let data = try JSONEncoder().encode(config)
+
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let routes = try XCTUnwrap(json["routes"] as? [String: Int])  // exactly one top-level key: "routes"
+        XCTAssertEqual(Array(json.keys), ["routes"])
+        XCTAssertEqual(routes["web.apc.local"], 8081)
+        XCTAssertEqual(routes["db.apc.local"], 5432)
+
+        XCTAssertEqual(try JSONDecoder().decode(RoutingConfig.self, from: data), config)
+    }
+}

@@ -362,19 +362,17 @@ class GUIStateManager: ObservableObject {
     
     func stopContainer(_ id: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            ContainerManager.shared.stopContainer(id: id)
-            DispatchQueue.main.async {
-                self.refreshAll()
-            }
+            do { try ContainerManager.shared.stopContainer(id: id) }
+            catch { DispatchQueue.main.async { self.alertMessage = error.localizedDescription; self.showingAlert = true } }
+            DispatchQueue.main.async { self.refreshAll() }
         }
     }
 
     func killContainer(_ id: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            ContainerManager.shared.killContainer(id: id)
-            DispatchQueue.main.async {
-                self.refreshAll()
-            }
+            do { try ContainerManager.shared.killContainer(id: id) }
+            catch { DispatchQueue.main.async { self.alertMessage = error.localizedDescription; self.showingAlert = true } }
+            DispatchQueue.main.async { self.refreshAll() }
         }
     }
 
@@ -429,10 +427,16 @@ class GUIStateManager: ObservableObject {
     
     func stopSelectedContainers() {
         DispatchQueue.global(qos: .userInitiated).async {
+            var errors: [String] = []
             for id in self.selectedContainerIDs {
-                ContainerManager.shared.stopContainer(id: id)
+                do { try ContainerManager.shared.stopContainer(id: id) }
+                catch { errors.append("\(id): \(error.localizedDescription)") }
             }
             DispatchQueue.main.async {
+                if !errors.isEmpty {
+                    self.alertMessage = "Some containers failed to stop:\n" + errors.joined(separator: "\n")
+                    self.showingAlert = true
+                }
                 self.refreshAll()
             }
         }
@@ -453,9 +457,13 @@ class GUIStateManager: ObservableObject {
     func pullNewImage(repo: String, tag: String) {
         self.isPullingImage = true
         DispatchQueue.global(qos: .userInitiated).async {
-            ContainerManager.shared.addImage(repository: repo, tag: tag)
+            let result = ContainerManager.shared.addImage(repository: repo, tag: tag)
             DispatchQueue.main.async {
                 self.isPullingImage = false
+                if !result.success {
+                    self.alertMessage = "Pull failed: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown error" : result.output)"
+                    self.showingAlert = true
+                }
                 self.refreshAll()
             }
         }
@@ -536,8 +544,11 @@ class GUIStateManager: ObservableObject {
     }
 
     func removeImage(_ id: String) {
-        ContainerManager.shared.removeImage(id: id)
-        refreshAll()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try ContainerManager.shared.removeImage(id: id) }
+            catch { DispatchQueue.main.async { self.alertMessage = error.localizedDescription; self.showingAlert = true } }
+            DispatchQueue.main.async { self.refreshAll() }
+        }
     }
     
     func pruneStorage() {
@@ -1723,7 +1734,6 @@ struct CreateContainerSheet: View {
                 Spacer()
             }
             .padding(.bottom, 6)
-            .onAppear { applyPrefill() }
 
             Divider()
 
@@ -1852,7 +1862,10 @@ struct CreateContainerSheet: View {
         .padding()
         .frame(width: 480, height: 500)
         .onAppear {
-            if !state.images.isEmpty {
+            // Single deterministic setup: honor a "Run from image" prefill, else default to the first image.
+            if let prefill = prefillImage, !prefill.isEmpty {
+                applyPrefill()
+            } else if !state.images.isEmpty {
                 let img = state.images[0]
                 image = "\(img.repository):\(img.tag)"
                 selectedImageIndex = 0

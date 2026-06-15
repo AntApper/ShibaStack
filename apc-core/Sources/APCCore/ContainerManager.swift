@@ -132,13 +132,22 @@ public final class ContainerManager: @unchecked Sendable {
     }
     
     public func startContainer(id: String) throws {
-        _ = engine.run(["start", id])
+        let result = runCapturing(["start", id])
+        guard result.success else { throw Self.cliError(result.output, fallback: "Failed to start container '\(id)'.") }
         syncRoutingConfig()
     }
-    
-    public func stopContainer(id: String) {
-        _ = engine.run(["stop", id])
+
+    public func stopContainer(id: String) throws {
+        let result = runCapturing(["stop", id])
+        guard result.success else { throw Self.cliError(result.output, fallback: "Failed to stop container '\(id)'.") }
         syncRoutingConfig()
+    }
+
+    /// Build an NSError carrying the real CLI stderr/stdout, or a fallback message.
+    static func cliError(_ output: String, fallback: String) -> NSError {
+        let message = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return NSError(domain: "ContainerManager", code: 1,
+                       userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? fallback : message])
     }
     
     public func runNewContainer(name: String, image: String, portMap: String) throws -> Container {
@@ -180,8 +189,9 @@ public final class ContainerManager: @unchecked Sendable {
     }
 
     /// Force-kill a container (sends SIGKILL), distinct from a graceful stop.
-    public func killContainer(id: String) {
-        _ = engine.run(["kill", id])
+    public func killContainer(id: String) throws {
+        let result = runCapturing(["kill", id])
+        guard result.success else { throw Self.cliError(result.output, fallback: "Failed to kill container '\(id)'.") }
         syncRoutingConfig()
     }
     
@@ -229,10 +239,11 @@ public final class ContainerManager: @unchecked Sendable {
         }
     }
     
-    public func addImage(repository: String, tag: String) {
+    /// Pull an image. Returns whether the pull exited cleanly + the combined output,
+    /// so the caller can surface real failures (bad tag, auth, network) honestly.
+    public func addImage(repository: String, tag: String) -> (success: Bool, output: String) {
         let imageRef = tag.isEmpty ? repository : "\(repository):\(tag)"
-        // Run pull synchronously or in background
-        _ = engine.run(["image", "pull", imageRef])
+        return runCapturing(["image", "pull", imageRef])
     }
 
     /// Build an image from a Dockerfile via real `container build`. Blocking — call
@@ -315,8 +326,9 @@ public final class ContainerManager: @unchecked Sendable {
         }
     }
 
-    public func removeImage(id: String) {
-        _ = engine.run(["image", "rm", id])
+    public func removeImage(id: String) throws {
+        let result = runCapturing(["image", "rm", id])
+        guard result.success else { throw Self.cliError(result.output, fallback: "Failed to remove image '\(id)'.") }
     }
     
     // MARK: - Volume APIs
@@ -355,11 +367,19 @@ public final class ContainerManager: @unchecked Sendable {
     
     public func createVolume(name: String, mountPoint: String) throws {
         // `container volume create` takes the name positionally — there is no --name flag.
-        _ = engine.run(["volume", "create", name])
+        // Capture exit + stderr so duplicates and other failures surface honestly.
+        let result = runCapturing(["volume", "create", name])
+        guard result.success else {
+            throw Self.cliError(result.output, fallback: "Failed to create volume '\(name)'.")
+        }
     }
 
     public func removeVolume(id: String) throws {
-        _ = engine.run(["volume", "rm", id])
+        // Surface real failures (volume in use, not found) instead of swallowing them.
+        let result = runCapturing(["volume", "rm", id])
+        guard result.success else {
+            throw Self.cliError(result.output, fallback: "Failed to remove volume '\(id)'.")
+        }
     }
 
     /// Reclaim disk by removing unreferenced images and snapshots.

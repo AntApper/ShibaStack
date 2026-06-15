@@ -217,7 +217,12 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
 - **Iteration P15 (robustness + per-container actions):**
   1. **Honest create failures** — `runNewContainer` used `engine.run` (stderr swallowed, exit ignored) so bad image / duplicate name / bad port FAILED SILENTLY. Switched it to `runCapturing` (combined output + exit) and it now THROWS the real error; the GUI's existing catch surfaces it. Verified end-to-end: bad image and duplicate name throw the real runtime errors; valid create still works.
   2. **Force Kill + Copy ID** — added `ContainerManager.killContainer` (`container kill`, SIGKILL) distinct from graceful stop; the GUI detail header gains a red "Force Kill" (running only) and a "Copy ID" button. Verified killContainer actually kills a running container.
-- **Backlog (next iterations):** more APCCore unit tests; "copy run command" affordance; broader QA; review volume/USB flows for the same silent-failure pattern.
+- **Iteration P16 (comprehensive silent-failure sweep + tests + bug fix):** a parallel re-audit agent found several mutating ops swallowed errors + one real view bug. Fixed all real findings:
+  1. **All user-driven mutating ops now surface real errors** — migrated `createVolume`, `removeVolume`, `startContainer`, `stopContainer`, `killContainer`, `removeImage` to `runCapturing` + throw the real CLI error (shared `cliError` helper); `addImage` (pull) now returns `(success, output)`. Updated every GUI handler (stop/kill/removeImage/pull/stopSelected) to catch + alert. Verified against the live runtime: start of a missing container, pull of a bad tag, remove of a missing/in-use image, duplicate-volume create, and remove of a missing volume ALL surface the real runtime error; valid ops still work.
+  2. **Fixed a real prefill bug (introduced P13)** — CreateContainerSheet had TWO `onAppear` blocks (my `applyPrefill()` + a pre-existing default-to-first-image), and SwiftUI doesn't order them, so "Run from image" could be silently overwritten. Merged into ONE deterministic `onAppear` that honors the prefill else defaults.
+  3. **RoutingConfig schema test** — `RoutingConfigTests` locks the Swift writer to the Go reader's exact `{"routes":{host:port}}` shape (single top-level key + round-trip).
+  - Agent false-positive noted: `liveStatsById` does NOT accumulate stale entries (the sampler does a full `= result` replacement each cycle).
+- **Backlog (next iterations):** remaining fire-and-forget (removeContainer/pruneStorage) are low priority; "copy run command" affordance; broader end-to-end QA; consider next major-milestone release once more lands.
 
 ## Reflection Checkpoint (Loop 20/100)
 
