@@ -644,17 +644,12 @@ class GUIStateManager: ObservableObject {
             let initrdSuccess = downloadInitrd.terminationStatus == 0
             
             if !kernelSuccess || !initrdSuccess {
-                // Network timeout fallback: If offline or failed, check if files already exist.
-                // If not, write small high-fidelity placeholder stubs for offline/mock development safety.
-                if !FileManager.default.fileExists(atPath: kernelURL.path) {
-                    try? "Mock Alpine Kernel stub".write(to: kernelURL, atomically: true, encoding: .utf8)
-                }
-                if !FileManager.default.fileExists(atPath: initrdURL.path) {
-                    try? "Mock Initrd stub".write(to: initrdURL, atomically: true, encoding: .utf8)
-                }
-                
+                // Do not write fake boot files — placeholder text cannot boot a VM.
+                // Remove the partial/empty download(s) that failed so a stale file isn't mistaken for a real kernel.
+                if !kernelSuccess { try? FileManager.default.removeItem(at: kernelURL) }
+                if !initrdSuccess { try? FileManager.default.removeItem(at: initrdURL) }
                 DispatchQueue.main.async {
-                    self.alertMessage = "Kernel download timed out or failed. ShibaStack has written local high-fidelity offline stubs to allow fully-simulated virtualization testing."
+                    self.alertMessage = "Kernel download failed (offline, or the Alpine CDN was unreachable). No boot images were written — check your connection and try again."
                     self.showingAlert = true
                 }
             }
@@ -1986,10 +1981,10 @@ struct VolumesDashboardView: View {
                             .font(.title2)
                         
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Host Path: /Users")
+                            Text("Host directory: /Users")
                                 .font(.subheadline)
                                 .fontWeight(.bold)
-                            Text("Mapped Path inside Guest VM: /host/Users")
+                            Text("Shared into guests via VirtioFS tag \"users\" (active when the VM is running).")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

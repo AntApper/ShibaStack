@@ -194,7 +194,10 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   3. **GitHub repo description set** (was blank) via gh.
   4. **License chosen: BSL 1.1** (user picked it over Apache 2.0 — briefly considered Apache but nothing was committed for it). Canonical BUSL-1.1 template (SPDX) with parameters: Licensor=AntApper, Change Date=2030-06-14, Change License=Apache 2.0, Additional Use Grant allows all use incl. production except offering a competing commercial/hosted container-management product. Added LICENSE + README badge + accurate License section.
 - **Release v0.1.0 (2026-06-14):** built ShibaStack.dmg via scripts/build-dmg.sh with the **branded Shiba app icon** (ShibaStack.icns rebuilt from the nanobanana logo — white bg removed, transparent rounded corners, full 16–1024px iconset), version 0.1.0, and published to GitHub Releases (AntApper/ShibaStack) with the DMG asset. Cadence: cut a branded DMG release after MAJOR improvements (see memory shibastack-release-process). build-dmg.sh now also passes -framework Network.
-- **Backlog (next iterations):** VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build UI.
+- **Iteration P9 (honesty):**
+  1. **Kernel-stub fallback removed** — on download failure the onboarding wrote fake `"Mock Alpine Kernel stub"` / `"Mock Initrd stub"` text files (un-bootable) and claimed it wrote "high-fidelity offline stubs." Now it writes nothing fake, removes the failed partial download, and shows an honest "download failed — no boot images written" error.
+  2. **VirtioFS labels truthful** — replaced the fabricated guest path "Mapped Path inside Guest VM: /host/Users" with the real config (VMManager shares `/Users` via VirtioFS tag `"users"`), noting it's active when the VM is running. Host path /Users is the real configured share.
+- **Backlog (next iterations):** results of the P9 final honesty-sweep agent (pending); live stats in container LIST; image build (`container build`) UI; per-container actions polish.
 
 ## Reflection Checkpoint (Loop 20/100)
 
