@@ -207,7 +207,9 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
 - **Iteration P12 (image tag + push):**
   1. **Real tag + push** — probed the CLI (`image tag <source> <target>`, `image push <reference>`, auth via `container registry login`). Added a shared `runCapturing(_:)` helper (combined stdout+stderr + exit status) and `ContainerManager.tagImage` / `pushImage` on top of it; refactored `buildImage` to use it. Verified: tag creates a new ref that appears in `image list`; push to a dead local registry fails HONESTLY with the real error ("Connection refused") — nothing leaves the machine.
   2. **GUI** — each image row now has an ellipsis menu: **Tag…** (sheet to enter the new reference), **Push** (async, with a "Pushing image…" banner and an honest success/failure alert — push failures surface the real registry error, e.g. login required), and **Delete**.
-- **Backlog (next iterations):** "Run from image" shortcut (prefill CreateContainerSheet from a selected image); registry login UI; per-container actions polish (kill/copy-id); a few real APCCore unit tests via the test target.
+- **Iteration P13 (run from image):**
+  1. **"Run…" from the Images view** — each image's menu gained a "Run…" item that sets `GUIStateManager.pendingRunImage` and navigates to the Containers tab; ContainersDashboardView consumes it (onAppear/onChange) and opens CreateContainerSheet prefilled with that image. CreateContainerSheet gained a `prefillImage` param + `applyPrefill()` that selects the matching pulled image in the picker (or custom mode). Also fixed the picker's onChange so selecting "custom" no longer wipes the typed/prefilled image. Container creation reuses the already-verified runNewContainer path; GUI-only flow verified by build.
+- **Backlog (next iterations):** registry login UI (`container registry login --username <u> --password-stdin <server>` — pass password via stdin, never store/log it) so push works; per-container actions polish (kill/copy-id); add real APCCore unit tests (ls-parse, image-ref strip) via the test target.
 
 ## Reflection Checkpoint (Loop 20/100)
 

@@ -214,6 +214,8 @@ class GUIStateManager: ObservableObject {
     @Published var lastBuildLog: String = ""
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
+    // Set by "Run from image" in the Images view; consumed by the Containers view to open the create sheet prefilled.
+    @Published var pendingRunImage: String? = nil
     @Published var selectedContainerIDs = Set<String>() {
         didSet {
             if !selectedContainerIDs.contains(selectedContainerID ?? "") {
@@ -1034,6 +1036,7 @@ enum ContainerTab: String, CaseIterable {
 struct ContainersDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     @State private var showingCreateSheet = false
+    @State private var prefillImage: String? = nil
     @State private var activeDetailTab: ContainerTab = .logs
     @State private var pinToBottom = true
     
@@ -1475,8 +1478,10 @@ struct ContainersDashboardView: View {
         .frame(minWidth: 450, maxWidth: .infinity)
         } // Closes HSplitView
         .sheet(isPresented: $showingCreateSheet) {
-            CreateContainerSheet(isPresented: $showingCreateSheet)
+            CreateContainerSheet(isPresented: $showingCreateSheet, prefillImage: prefillImage)
         }
+        .onAppear { consumePendingRunImage() }
+        .onChange(of: state.pendingRunImage) { consumePendingRunImage() }
     } // Closes body
     
     // Command prompt executor
@@ -1560,6 +1565,15 @@ struct ContainersDashboardView: View {
         loadContainerFiles(cont)
     }
     
+    // Open the create-container sheet prefilled when "Run from image" navigated here.
+    private func consumePendingRunImage() {
+        if let image = state.pendingRunImage {
+            prefillImage = image
+            showingCreateSheet = true
+            state.pendingRunImage = nil
+        }
+    }
+
     // Live streamed logs while running; otherwise the one-shot logs from the last refresh.
     private func displayLogs(for cont: Container) -> [String] {
         cont.state == "running" ? streamedLogs : cont.logs
@@ -1611,11 +1625,23 @@ struct FileItem: Identifiable {
 // Sheet view to launch containers
 struct CreateContainerSheet: View {
     @Binding var isPresented: Bool
+    var prefillImage: String? = nil
     @EnvironmentObject var state: GUIStateManager
     @State private var name = ""
     @State private var image = "alpine"
     @State private var ports = "80:8080"
     @State private var selectedImageIndex = 0
+
+    // If opened via "Run from image", select that image (matching the picker, else custom).
+    private func applyPrefill() {
+        guard let prefill = prefillImage, !prefill.isEmpty else { return }
+        image = prefill
+        if let idx = state.images.firstIndex(where: { "\($0.repository):\($0.tag)" == prefill }) {
+            selectedImageIndex = idx
+        } else {
+            selectedImageIndex = -1
+        }
+    }
     
     // Validation messages
     @State private var nameError: String? = nil
@@ -1645,9 +1671,10 @@ struct CreateContainerSheet: View {
                 Spacer()
             }
             .padding(.bottom, 6)
-            
+            .onAppear { applyPrefill() }
+
             Divider()
-            
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     // Container Name Card
@@ -1698,12 +1725,11 @@ struct CreateContainerSheet: View {
                             }
                             .pickerStyle(.menu)
                             .onChange(of: selectedImageIndex) { _, newValue in
-                                if newValue != -1 {
+                                if newValue >= 0, newValue < state.images.count {
                                     let img = state.images[newValue]
                                     image = "\(img.repository):\(img.tag)"
-                                } else {
-                                    image = ""
                                 }
+                                // For custom (-1), keep whatever is in `image` (typed text or prefill).
                             }
                         }
                         
@@ -1969,6 +1995,11 @@ struct ImagesDashboardView: View {
                                 .padding(.horizontal, 12)
 
                             Menu {
+                                Button {
+                                    state.pendingRunImage = "\(img.repository):\(img.tag)"
+                                    state.selectedSidebarItem = .containers
+                                } label: { Label("Run…", systemImage: "play") }
+
                                 Button {
                                     tagSource = "\(img.repository):\(img.tag)"
                                     tagTarget = ""
