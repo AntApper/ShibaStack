@@ -94,6 +94,22 @@ final class ContainerManagerTests: XCTestCase {
         XCTAssertEqual(redis.tag, "7.2")
         XCTAssertEqual(redis.size, "5.0 MB")
     }
+
+    func testGetImagesPrefixStripVariants() {
+        let imageJSON = """
+        [
+          { "reference": "docker.io/library/nginx:latest", "descriptor": { "size": 5242880 } },
+          { "reference": "docker.io/corentinth/it-tools:latest", "descriptor": { "size": 12582912 } },
+          { "reference": "ghcr.io/owner/app:1.0", "descriptor": { "size": 3145728 } }
+        ]
+        """
+        let manager = makeManager(responses: ["image": imageJSON])
+        let byRepo = Dictionary(uniqueKeysWithValues: manager.getImages().map { ($0.repository, $0) })
+
+        XCTAssertEqual(byRepo["nginx"]?.tag, "latest")                 // docker.io/library/ stripped
+        XCTAssertEqual(byRepo["corentinth/it-tools"]?.tag, "latest")   // docker.io/ stripped, user/repo kept
+        XCTAssertEqual(byRepo["ghcr.io/owner/app"]?.tag, "1.0")        // non-docker.io host preserved
+    }
 }
 
 /// The host/guest wire contract — one typed codec, exercised without a socket.
@@ -131,6 +147,12 @@ final class ContainerDomainTests: XCTestCase {
         XCTAssertEqual(container(name: "web", ports: ["8081:80"]).hostPort, 8081)
         XCTAssertEqual(container(name: "web", ports: ["9090"]).hostPort, 9090) // bare port
         XCTAssertNil(container(name: "web", ports: []).hostPort)
+    }
+
+    func testHostPortSkipsUnparseableMappings() {
+        // First parseable host port wins; non-numeric entries are skipped, not crashing.
+        XCTAssertEqual(container(name: "web", ports: ["weird", "9090:80"]).hostPort, 9090)
+        XCTAssertNil(container(name: "web", ports: ["notaport"]).hostPort)
     }
 
     func testPrimaryDomainFromName() {
