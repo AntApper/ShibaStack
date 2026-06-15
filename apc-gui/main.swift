@@ -665,6 +665,100 @@ class GUIStateManager: ObservableObject {
         initializeEnvironment()
     }
     
+    func generateDiagnosticsReport() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let desktop = home.appendingPathComponent("Desktop")
+        let reportURL = desktop.appendingPathComponent("shibastack-diagnostics.md")
+        
+        let fm = FileManager.default
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let timestamp = formatter.string(from: Date())
+        
+        var md = """
+        # ShibaStack Diagnostics Report
+        
+        Generated: \(timestamp)
+        Host: \(Host.current().localizedName ?? "Local Mac")
+        macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString)
+        
+        ---
+        
+        ## 1. System Dependencies & Environment
+        - **Swift Compiler:** \(swiftInstalled ? "Installed" : "Missing")
+        - **Go Compiler:** \(goInstalled ? "Installed" : "Missing")
+        - **Local APC Directory (~/.apc):** \(envInitialized ? "Initialized" : "Missing")
+        - **DNS Resolver Rule (/etc/resolver/apc.local):** \(resolverConfigured ? "Configured" : "Missing")
+        - **Native OCI CLI (/usr/local/bin/container):** \(fm.fileExists(atPath: "/usr/local/bin/container") ? "Available" : "Missing")
+        
+        ---
+        
+        ## 2. Dynamic Resource Configuration
+        - **Cores Allocated:** \(allocatedCPUs) Cores
+        - **RAM Allocated:** \(allocatedMemoryGB) GB
+        - **Rosetta 2 Emulation:** \(enableRosetta ? "Enabled" : "Disabled")
+        - **Active Hypervisor Mode:** \(vmState == "running" ? "RUNNING" : "STOPPED")
+        
+        ---
+        
+        ## 3. Active Container Listings (Real OCI Engine)
+        """
+        
+        let conts = ContainerManager.shared.getContainers()
+        if conts.isEmpty {
+            md += "\n*No containers active or registered.*\n"
+        } else {
+            md += "\n| Name | Image | State | Ports |\n|---|---|---|---|\n"
+            for c in conts {
+                md += "| \(c.name) | \(c.image) | \(c.state.uppercased()) | \(c.ports.joined(separator: ", ")) |\n"
+            }
+        }
+        
+        md += "\n---\n\n## 4. Local Images Store\n"
+        let imgs = ContainerManager.shared.getImages()
+        if imgs.isEmpty {
+            md += "*No container images pulled.*"
+        } else {
+            md += "\n| Repository | Tag | Image ID | Size |\n|---|---|---|---|\n"
+            for img in imgs {
+                md += "| \(img.repository) | \(img.tag) | \(img.id.prefix(12)) | \(img.size) |\n"
+            }
+        }
+        
+        md += "\n---\n\n## 5. Local Persistent Volumes\n"
+        let vols = ContainerManager.shared.getVolumes()
+        if vols.isEmpty {
+            md += "*No persistent volumes configured.*"
+        } else {
+            md += "\n| Name | Size | Mount Source |\n|---|---|---|\n"
+            for vol in vols {
+                md += "| \(vol.name) | \(vol.size) | \(vol.mountPoint) |\n"
+            }
+        }
+        
+        md += "\n---\n\n## 6. Physical USB Accessories Scanning (IOKit)\n"
+        let usb = USBManager.shared.scanDevices()
+        if usb.isEmpty {
+            md += "*No physical USB accessories discovered.*"
+        } else {
+            md += "\n| Name | Vendor ID | Product ID | Serial Number | Attached |\n|---|---|---|---|---|\n"
+            for dev in usb {
+                md += "| \(dev.name) | \(dev.vendorId) | \(dev.productId) | \(dev.serialNumber) | \(dev.isAttached ? "YES" : "NO") |\n"
+            }
+        }
+        
+        md += "\n\n--- End of Report ---\n"
+        
+        do {
+            try md.write(to: reportURL, atomically: true, encoding: .utf8)
+            self.alertMessage = "Diagnostics Report successfully saved to Desktop as 'shibastack-diagnostics.md'."
+            self.showingAlert = true
+        } catch {
+            self.alertMessage = "Failed to collect diagnostics: \(error.localizedDescription)"
+            self.showingAlert = true
+        }
+    }
+    
     func getContainerURL(_ cont: Container) -> URL {
         var hostPort = 8080
         if let portStr = cont.ports.first {
@@ -2127,9 +2221,28 @@ struct SettingsDashboardView: View {
                 .cornerRadius(10)
                 
                 // Clean/Reset Environment card
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
                     Text("Troubleshooting & Maintenance")
                         .font(.headline)
+                    
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Diagnostics Collector")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Text("Gathers active environment configuration, OCI runtime details, and network routing logs into a beautiful markdown report on your Desktop.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        
+                        Button(action: { state.generateDiagnosticsReport() }) {
+                            Label("Collect Diagnostics", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    
+                    Divider()
                     
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
