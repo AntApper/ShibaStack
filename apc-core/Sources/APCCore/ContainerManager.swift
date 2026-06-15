@@ -166,12 +166,6 @@ public final class ContainerManager: @unchecked Sendable {
         )
     }
     
-    public func addPortForward(containerName: String, portMap: String) {
-        // Ports are set up on creation in `/usr/local/bin/container`.
-        // To support dynamic mapping sync:
-        print("[ContainerManager] Dynamic port addition is managed at container creation.")
-    }
-    
     public func removeContainer(id: String) {
         _ = engine.run(["stop", id])
         _ = engine.run(["rm", id])

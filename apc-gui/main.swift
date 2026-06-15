@@ -421,11 +421,6 @@ class GUIStateManager: ObservableObject {
         }
     }
     
-    func addPortForward(hostPort: Int, containerPort: Int, containerName: String) {
-        ContainerManager.shared.addPortForward(containerName: containerName, portMap: "\(hostPort):\(containerPort)")
-        refreshAll()
-    }
-    
     func removeImage(_ id: String) {
         ContainerManager.shared.removeImage(id: id)
         refreshAll()
@@ -462,7 +457,7 @@ class GUIStateManager: ObservableObject {
             
             let resolverExists = FileManager.default.fileExists(atPath: "/etc/resolver/apc.local")
             let kernelExists = FileManager.default.fileExists(atPath: home.appendingPathComponent(".apc/boot/vmlinuz").path)
-            let appleContainerExists = self.checkCommandExists("apple-container") || self.checkCommandExists("container") || FileManager.default.fileExists(atPath: "/usr/local/bin/apple-container") || FileManager.default.fileExists(atPath: "\(home.path)/.apc/bin/apple-container")
+            let appleContainerExists = self.checkCommandExists("container") || FileManager.default.fileExists(atPath: "/usr/local/bin/container")
             
             DispatchQueue.main.async {
                 self.swiftInstalled = swiftPath
@@ -661,30 +656,16 @@ class GUIStateManager: ObservableObject {
     func installAppleContainer() {
         self.installingAppleContainer = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            let binDir = home.appendingPathComponent(".apc/bin")
-            try? FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true, attributes: nil)
-            
-            let appleContainerURL = binDir.appendingPathComponent("apple-container")
-            
-            // In a real environment, we'd pull the compiled binary from Apple's native open-source releases.
-            // For robust installation and local testing, we compile/symlink or create a mock CLI helper
-            let mockScript = """
-            #!/bin/bash
-            echo "Apple Native Containerization Engine v1.0.0"
-            """
-            try? mockScript.write(to: appleContainerURL, atomically: true, encoding: .utf8)
-            chmod(appleContainerURL.path, 0o755)
-            
-            // Attempt to copy to /usr/local/bin for standard path access
-            let copyTask = Process()
-            copyTask.executableURL = URL(fileURLWithPath: "/bin/cp")
-            copyTask.arguments = [appleContainerURL.path, "/usr/local/bin/apple-container"]
-            try? copyTask.run()
-            copyTask.waitUntilExit()
-            
+            // The real Apple container runtime is the `container` binary. If it's already
+            // installed we just mark the dependency satisfied; otherwise open Apple's
+            // official releases so the user can install the real .pkg (no fake stub).
+            let alreadyInstalled = FileManager.default.fileExists(atPath: "/usr/local/bin/container")
+                || self.checkCommandExists("container")
             DispatchQueue.main.async {
                 self.installingAppleContainer = false
+                if !alreadyInstalled, let url = URL(string: "https://github.com/apple/container/releases") {
+                    NSWorkspace.shared.open(url)
+                }
                 self.checkDependencies()
             }
         }
@@ -2075,10 +2056,33 @@ struct VolumesDashboardView: View {
 struct NetworkDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     @State private var showingAddRule = false
-    @State private var fwdHostPort = "8080"
-    @State private var fwdContainerPort = "80"
-    @State private var fwdContainerName = ""
-    
+    @State private var dnsActive = false
+    @State private var proxyActive = false
+
+    @ViewBuilder
+    private func statusBadge(_ active: Bool) -> some View {
+        Text(active ? "ACTIVE" : "INACTIVE")
+            .font(.caption2)
+            .fontWeight(.bold)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background((active ? Color.green : Color.gray).opacity(0.15))
+            .foregroundColor(active ? .green : .gray)
+            .cornerRadius(4)
+    }
+
+    // Probe the real user-space services off the main thread.
+    private func refreshNetworkStatus() {
+        DispatchQueue.global(qos: .utility).async {
+            let dns = NetworkStatus.isDNSResponding(port: 15353)
+            let proxy = NetworkStatus.isTCPListening(port: 8080) || NetworkStatus.isTCPListening(port: 80)
+            DispatchQueue.main.async {
+                dnsActive = dns
+                proxyActive = proxy
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -2095,7 +2099,7 @@ struct NetworkDashboardView: View {
                     // DNS Resolver status
                     HStack(spacing: 12) {
                         Image(systemName: "globe.americas.fill")
-                            .foregroundColor(.green)
+                            .foregroundColor(dnsActive ? .green : .secondary)
                             .font(.title2)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("DNS Server")
@@ -2105,14 +2109,7 @@ struct NetworkDashboardView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Text("ACTIVE")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
+                        statusBadge(dnsActive)
                     }
                     .padding()
                     .background(Color(NSColor.controlBackgroundColor))
@@ -2121,7 +2118,7 @@ struct NetworkDashboardView: View {
                     // Proxy status
                     HStack(spacing: 12) {
                         Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                            .foregroundColor(.green)
+                            .foregroundColor(proxyActive ? .green : .secondary)
                             .font(.title2)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Reverse Proxy")
@@ -2131,14 +2128,7 @@ struct NetworkDashboardView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Text("ACTIVE")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(4)
+                        statusBadge(proxyActive)
                     }
                     .padding()
                     .background(Color(NSColor.controlBackgroundColor))
@@ -2171,33 +2161,25 @@ struct NetworkDashboardView: View {
                             .font(.headline)
                         Spacer()
                         Button(action: { showingAddRule.toggle() }) {
-                            Label(showingAddRule ? "Hide Form" : "Add Port Map", systemImage: "plus")
+                            Label(showingAddRule ? "Hide" : "Add a Port?", systemImage: "questionmark.circle")
                         }
                     }
-                    
+
                     if showingAddRule {
-                        HStack {
-                            TextField("Host Port", text: $fwdHostPort)
-                                .textFieldStyle(.roundedBorder)
-                            Text(":")
-                            TextField("Container Port", text: $fwdContainerPort)
-                                .textFieldStyle(.roundedBorder)
-                            
-                            Picker("", selection: $fwdContainerName) {
-                                Text("Select container").tag("")
-                                ForEach(state.containers) { cont in
-                                    Text(cont.name).tag(cont.name)
-                                }
-                            }
-                            .frame(width: 150)
-                            
-                            Button("Apply Forward") {
-                                guard let hPort = Int(fwdHostPort), let cPort = Int(fwdContainerPort), !fwdContainerName.isEmpty else { return }
-                                state.addPortForward(hostPort: hPort, containerPort: cPort, containerName: fwdContainerName)
-                                showingAddRule = false
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(fwdContainerName.isEmpty)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Published ports are fixed when a container is created.", systemImage: "info.circle")
+                                .font(.subheadline)
+                            Text("Apple's container runtime has no live port update. To expose another port, recreate the container with the mapping added:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("container run -d --name <name> -p <hostPort>:<containerPort> <image>")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.shibaOrange)
+                                .textSelection(.enabled)
+                                .padding(8)
+                                .background(Color.black.opacity(0.06))
+                                .cornerRadius(6)
                         }
                     }
                 }
@@ -2238,6 +2220,13 @@ struct NetworkDashboardView: View {
         }
         .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
+        .task {
+            // Probe real service status on appear, then refresh every few seconds.
+            while !Task.isCancelled {
+                refreshNetworkStatus()
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
     }
 }
 
