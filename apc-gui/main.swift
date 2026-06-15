@@ -1246,14 +1246,21 @@ struct ContainersDashboardView: View {
                                     .buttonStyle(.borderedProminent)
                                 }
                                 
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(selected.id, forType: .string)
-                                }) {
-                                    Label("Copy ID", systemImage: "doc.on.doc")
+                                Menu {
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(selected.id, forType: .string)
+                                    } label: { Label("Copy ID", systemImage: "doc.on.doc") }
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(runCommand(for: selected), forType: .string)
+                                    } label: { Label("Copy Run Command", systemImage: "terminal") }
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
                                 }
-                                .buttonStyle(.bordered)
-                                .help("Copy the container ID")
+                                .menuStyle(.borderlessButton)
+                                .frame(width: 64)
+                                .help("Copy the container ID or its run command")
 
                                 Button(role: .destructive, action: { state.deleteContainer(id: selected.id) }) {
                                     Label("Delete", systemImage: "trash")
@@ -1635,6 +1642,14 @@ struct ContainersDashboardView: View {
             showingCreateSheet = true
             state.pendingRunImage = nil
         }
+    }
+
+    // Reconstruct the real `container run` command that recreates this container.
+    private func runCommand(for cont: Container) -> String {
+        var parts = ["container run -d --name \(cont.name)"]
+        for port in cont.ports where !port.isEmpty { parts.append("-p \(port)") }
+        parts.append(cont.image)
+        return parts.joined(separator: " ")
     }
 
     // Live streamed logs while running; otherwise the one-shot logs from the last refresh.

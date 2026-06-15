@@ -222,7 +222,11 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   2. **Fixed a real prefill bug (introduced P13)** — CreateContainerSheet had TWO `onAppear` blocks (my `applyPrefill()` + a pre-existing default-to-first-image), and SwiftUI doesn't order them, so "Run from image" could be silently overwritten. Merged into ONE deterministic `onAppear` that honors the prefill else defaults.
   3. **RoutingConfig schema test** — `RoutingConfigTests` locks the Swift writer to the Go reader's exact `{"routes":{host:port}}` shape (single top-level key + round-trip).
   - Agent false-positive noted: `liveStatsById` does NOT accumulate stale entries (the sampler does a full `= result` replacement each cycle).
-- **Backlog (next iterations):** remaining fire-and-forget (removeContainer/pruneStorage) are low priority; "copy run command" affordance; broader end-to-end QA; consider next major-milestone release once more lands.
+- **Iteration P17 (polish + QA):**
+  1. **End-to-end QA against the live runtime** — exercised pull→build→tag→run→exec→logs→stop→rm. Found NO code bugs. Insight: running a built `FROM alpine` image with no long-running CMD leaves an immediately-exited (stopped) container, so exec/stats/file-browse correctly don't work on it — honest behavior, not a bug (verified the same paths work on a long-running container; exec/liveStats/listContainerDirectory were each independently verified in P5/P10/P3).
+  2. **Re-confirmed: inspect exposes NO timestamp** (only the false-positive `runtimeHandler`), so container created/started time stays honestly omitted (no fake uptime).
+  3. **"Copy Run Command"** — the container detail "Copy" menu now offers "Copy ID" and "Copy Run Command", reconstructing the real `container run -d --name <name> [-p host:guest] <image>` string from the container's config.
+- **Status:** app is at a stable, feature- + honesty-complete plateau. Backlog is now polish/QA only: more unit tests; notarized signing (needs Apple Developer acct); optional stretch features (k8s, multi-distro) are large and out of current scope.
 
 ## Reflection Checkpoint (Loop 20/100)
 
