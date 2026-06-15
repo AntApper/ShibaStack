@@ -36,6 +36,11 @@ let package = Package(
             name: "apc",
             dependencies: ["APCCore"],
             path: "Sources/apc-cli"
+        ),
+        .testTarget(
+            name: "APCCoreTests",
+            dependencies: ["APCCore"],
+            path: "Tests/APCCoreTests"
         )
     ]
 )

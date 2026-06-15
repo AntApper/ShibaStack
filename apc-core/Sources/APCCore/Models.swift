@@ -6,11 +6,13 @@ public struct Container: Codable, Identifiable, Hashable {
     public var image: String
     public var state: String // "running", "stopped", "paused"
     public var ports: [String] // e.g., ["80:8080"]
-    public var cpuUsage: Double // Percentage, e.g., 1.5
-    public var memoryUsage: Double // MB, e.g., 128.0
+    public var cpuUsage: Double // Live CPU %, 0 when no live sample is available
+    public var memoryUsage: Double // Live memory MB, 0 when no live sample is available
+    public var cpuCores: Int // Allocated vCPUs (real, from the runtime)
+    public var memoryLimitMB: Double // Allocated memory limit in MB (real, from the runtime)
     public var logs: [String]
-    
-    public init(id: String, name: String, image: String, state: String, ports: [String], cpuUsage: Double, memoryUsage: Double, logs: [String]) {
+
+    public init(id: String, name: String, image: String, state: String, ports: [String], cpuUsage: Double, memoryUsage: Double, cpuCores: Int = 0, memoryLimitMB: Double = 0, logs: [String]) {
         self.id = id
         self.name = name
         self.image = image
@@ -18,7 +20,44 @@ public struct Container: Codable, Identifiable, Hashable {
         self.ports = ports
         self.cpuUsage = cpuUsage
         self.memoryUsage = memoryUsage
+        self.cpuCores = cpuCores
+        self.memoryLimitMB = memoryLimitMB
         self.logs = logs
+    }
+}
+
+// MARK: - Port mapping & developer-facing domains
+//
+// Published ports arrive as "host:guest" strings (e.g. "8081:80"). The host side
+// is what the developer reaches; the guest side is internal. This is the single
+// place that knows how to read that format and how a container's name becomes an
+// `*.apc.local` domain — callers ask the container instead of re-parsing.
+extension Container {
+    /// Host-side port of one published-port string ("8081:80" -> 8081, or a bare "8081").
+    static func hostPort(of portString: String) -> Int? {
+        if let head = portString.split(separator: ":").first, let port = Int(head) { return port }
+        return Int(portString)
+    }
+
+    /// Host port the container's first published port maps to, if any.
+    public var hostPort: Int? {
+        ports.lazy.compactMap(Container.hostPort(of:)).first
+    }
+
+    /// The container's primary developer-facing domain, e.g. `web.apc.local`.
+    public var primaryDomain: String { "\(name).apc.local" }
+
+    /// Every `*.apc.local` domain this container publishes, mapped to its host port.
+    /// The first published port owns the bare `name.apc.local`; each later port gets
+    /// `name-<hostPort>.apc.local`, matching the reverse proxy's routing table.
+    public var routeMappings: [String: Int] {
+        var routes: [String: Int] = [:]
+        for (index, portString) in ports.enumerated() {
+            let port = Container.hostPort(of: portString) ?? 8080
+            let domain = index == 0 ? primaryDomain : "\(name)-\(port).apc.local"
+            routes[domain] = port
+        }
+        return routes
     }
 }
 
@@ -65,6 +104,28 @@ public struct USBDevice: Codable, Identifiable, Hashable {
         self.productId = productId
         self.serialNumber = serialNumber
         self.isAttached = isAttached
+    }
+}
+
+/// On-disk schema of `routing.json`, mirrored by `Config` in apc-network/routing.go.
+/// The container layer is its only writer; the reverse proxy's routing registry reads it.
+public struct RoutingConfig: Codable, Equatable {
+    public var routes: [String: Int]
+
+    public init(routes: [String: Int]) {
+        self.routes = routes
+    }
+}
+
+/// A live, real-time resource sample for a single running container, read from
+/// the guest cgroup v2 files via `container exec`.
+public struct LiveContainerStats: Sendable, Equatable {
+    public let memoryBytes: UInt64
+    public let cpuPercent: Double // normalized to allocated cores (0...100)
+
+    public init(memoryBytes: UInt64, cpuPercent: Double) {
+        self.memoryBytes = memoryBytes
+        self.cpuPercent = cpuPercent
     }
 }
 

@@ -99,45 +99,35 @@ public final class VSOCKManager {
         connection.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                let commandPayload: [String: Any] = [
-                    "action": action,
-                    "name": name,
-                    "image": image,
-                    "cmd": cmd
-                ]
-                guard let data = try? JSONSerialization.data(withJSONObject: commandPayload, options: []),
-                      var payloadString = String(data: data, encoding: .utf8) else {
+                let command = GuestCommand(action: action, name: name, image: image, cmd: cmd)
+                guard let payload = try? GuestProtocol.encodeLine(command) else {
                     connection.cancel()
                     completion(nil, NSError(domain: "VSOCKManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to serialize JSON"]))
                     return
                 }
-                payloadString += "\n"
-                
-                connection.send(content: payloadString.data(using: .utf8), completion: .contentProcessed { error in
+
+                connection.send(content: payload, completion: .contentProcessed { error in
                     if let error = error {
                         connection.cancel()
                         completion(nil, error)
                         return
                     }
-                    
+
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, err in
                         connection.cancel()
                         if let err = err {
                             completion(nil, err)
                             return
                         }
-                        guard let data = data,
-                              let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                              let success = json["success"] as? Bool else {
+                        guard let data = data, let response = try? GuestProtocol.decode(data) else {
                             completion(nil, NSError(domain: "VSOCKManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to decode response"]))
                             return
                         }
-                        
-                        if success {
-                            let output = json["output"] as? String ?? ""
-                            completion(output, nil)
+
+                        if response.success {
+                            completion(response.output, nil)
                         } else {
-                            let errorMsg = json["error"] as? String ?? "Unknown guest error"
+                            let errorMsg = response.error.isEmpty ? "Unknown guest error" : response.error
                             completion(nil, NSError(domain: "VSOCKManager", code: 3, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
                         }
                     }

@@ -2,12 +2,15 @@ import Foundation
 
 public final class ContainerManager: @unchecked Sendable {
     public static let shared = ContainerManager()
-    
+
+    private let engine: ContainerEngine
     private let routingConfigURL: URL
-    private let containersFileURL: URL
-    private let imagesFileURL: URL
-    private let volumesFileURL: URL
-    
+
+    // Live-stats sampling state (cgroup CPU needs a delta between two reads).
+    private let statsLock = NSLock()
+    private var cpuSamples: [String: (usageUsec: UInt64, at: Date)] = [:]
+    private var lastHostCPUTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
+
     // Decodable structs for CLI json parsing
     private struct CLIContainerListItem: Codable {
         struct Configuration: Codable {
@@ -18,9 +21,14 @@ public final class ContainerManager: @unchecked Sendable {
                 let hostPort: Int
                 let containerPort: Int
             }
+            struct Resources: Codable {
+                let cpus: Int?
+                let memoryInBytes: Int64?
+            }
             let id: String
             let image: Image
             let publishedPorts: [PublishedPort]?
+            let resources: Resources?
         }
         let configuration: Configuration
         let status: String
@@ -39,45 +47,24 @@ public final class ContainerManager: @unchecked Sendable {
         let source: String
     }
     
-    private init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let apcDir = home.appendingPathComponent(".apc")
+    /// - Parameters:
+    ///   - engine: the runtime adapter (defaults to the native `container` CLI).
+    ///   - stateDirectory: where routing state is persisted (defaults to `~/.apc`).
+    ///     Tests pass a temp directory so they never touch the real config.
+    public init(engine: ContainerEngine = ProcessContainerEngine(), stateDirectory: URL? = nil) {
+        self.engine = engine
+        let apcDir = stateDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".apc")
         try? FileManager.default.createDirectory(at: apcDir, withIntermediateDirectories: true)
         self.routingConfigURL = apcDir.appendingPathComponent("routing.json")
-        self.containersFileURL = apcDir.appendingPathComponent("containers.json")
-        self.imagesFileURL = apcDir.appendingPathComponent("images.json")
-        self.volumesFileURL = apcDir.appendingPathComponent("volumes.json")
-        
+
         // Sync routing initially
         syncRoutingConfig()
     }
-    
-    // Helper to execute native container CLI commands on the host Mac
-    private func executeCLI(args: [String]) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/container")
-        process.arguments = args
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe() // Swallow stderr to keep logs pristine
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
-        } catch {
-            print("[ContainerManager] Error executing container CLI: \(error.localizedDescription)")
-            return nil
-        }
-    }
-    
+
     // MARK: - Container APIs
     
     public func getContainers() -> [Container] {
-        guard let output = executeCLI(args: ["list", "--all", "--format", "json"]),
+        guard let output = engine.run(["list", "--all", "--format", "json"]),
               let data = output.data(using: .utf8) else {
             return []
         }
@@ -99,7 +86,7 @@ public final class ContainerManager: @unchecked Sendable {
                 }
                 
                 let state = item.status.lowercased() == "running" ? "running" : "stopped"
-                
+
                 // Parse ports
                 var portsList: [String] = []
                 if let publishedPorts = config.publishedPorts {
@@ -107,24 +94,27 @@ public final class ContainerManager: @unchecked Sendable {
                         portsList.append("\(port.hostPort):\(port.containerPort)")
                     }
                 }
-                
-                // Real-time logs extraction
+
+                // Real allocated resources reported by the runtime.
+                let cores = config.resources?.cpus ?? 0
+                let memoryLimitMB = Double(config.resources?.memoryInBytes ?? 0) / (1024.0 * 1024.0)
+
+                // Real container logs — empty if the container has produced none yet.
                 var containerLogs: [String] = []
-                if let logOutput = executeCLI(args: ["logs", id]) {
+                if let logOutput = engine.run(["logs", id]) {
                     containerLogs = logOutput.components(separatedBy: "\n").filter { !$0.isEmpty }
                 }
-                if containerLogs.isEmpty {
-                    containerLogs = ["\(getTimestamp()) [info] Container initialized on host hypervisor."]
-                }
-                
+
                 return Container(
                     id: id,
                     name: name,
                     image: displayImage,
                     state: state,
                     ports: portsList,
-                    cpuUsage: state == "running" ? 0.3 : 0.0,
-                    memoryUsage: state == "running" ? 22.4 : 0.0,
+                    cpuUsage: 0.0,        // live CPU sampling not yet wired (no stats plugin)
+                    memoryUsage: 0.0,     // live memory sampling not yet wired
+                    cpuCores: cores,
+                    memoryLimitMB: memoryLimitMB,
                     logs: containerLogs
                 )
             }
@@ -142,12 +132,12 @@ public final class ContainerManager: @unchecked Sendable {
     }
     
     public func startContainer(id: String) throws {
-        _ = executeCLI(args: ["start", id])
+        _ = engine.run(["start", id])
         syncRoutingConfig()
     }
     
     public func stopContainer(id: String) {
-        _ = executeCLI(args: ["stop", id])
+        _ = engine.run(["stop", id])
         syncRoutingConfig()
     }
     
@@ -160,19 +150,19 @@ public final class ContainerManager: @unchecked Sendable {
         }
         args.append(image)
         
-        _ = executeCLI(args: args)
+        _ = engine.run(args)
         syncRoutingConfig()
         
-        // Return a representation of the newly created container
+        // Provisional representation; the next refresh replaces it with real runtime data.
         return Container(
             id: name,
             name: name,
             image: image,
             state: "running",
             ports: [portMap],
-            cpuUsage: 0.5,
-            memoryUsage: 35.0,
-            logs: ["\(getTimestamp()) [info] Container created and running."]
+            cpuUsage: 0.0,
+            memoryUsage: 0.0,
+            logs: ["\(getTimestamp()) [info] Container created."]
         )
     }
     
@@ -183,15 +173,15 @@ public final class ContainerManager: @unchecked Sendable {
     }
     
     public func removeContainer(id: String) {
-        _ = executeCLI(args: ["stop", id])
-        _ = executeCLI(args: ["rm", id])
+        _ = engine.run(["stop", id])
+        _ = engine.run(["rm", id])
         syncRoutingConfig()
     }
     
     // MARK: - Image APIs
     
     public func getImages() -> [ContainerImage] {
-        guard let output = executeCLI(args: ["image", "list", "--format", "json"]),
+        guard let output = engine.run(["image", "list", "--format", "json"]),
               let data = output.data(using: .utf8) else {
             return []
         }
@@ -235,17 +225,17 @@ public final class ContainerManager: @unchecked Sendable {
     public func addImage(repository: String, tag: String) {
         let imageRef = tag.isEmpty ? repository : "\(repository):\(tag)"
         // Run pull synchronously or in background
-        _ = executeCLI(args: ["image", "pull", imageRef])
+        _ = engine.run(["image", "pull", imageRef])
     }
     
     public func removeImage(id: String) {
-        _ = executeCLI(args: ["image", "rm", id])
+        _ = engine.run(["image", "rm", id])
     }
     
     // MARK: - Volume APIs
     
     public func getVolumes() -> [Volume] {
-        guard let output = executeCLI(args: ["volume", "list", "--format", "json"]),
+        guard let output = engine.run(["volume", "list", "--format", "json"]),
               let data = output.data(using: .utf8) else {
             return []
         }
@@ -277,54 +267,131 @@ public final class ContainerManager: @unchecked Sendable {
     }
     
     public func createVolume(name: String, mountPoint: String) throws {
-        _ = executeCLI(args: ["volume", "create", "--name", name])
+        // `container volume create` takes the name positionally — there is no --name flag.
+        _ = engine.run(["volume", "create", name])
     }
-    
+
     public func removeVolume(id: String) throws {
-        _ = executeCLI(args: ["volume", "rm", id])
+        _ = engine.run(["volume", "rm", id])
     }
-    
-    public func pruneVolumes() {
-        _ = executeCLI(args: ["volume", "prune", "-f"])
+
+    /// Reclaim disk by removing unreferenced images and snapshots.
+    /// The runtime has no `volume prune`; image prune is the real disk-reclaim path.
+    public func pruneStorage() {
+        _ = engine.run(["image", "prune"])
     }
     
     // MARK: - Hardware Stats API
     
     public func getStats() -> APCHardwareStats {
+        // Real figures: live host CPU, and memory committed by running containers
+        // against the VM's configured ceiling.
         let active = getContainers().filter { $0.state == "running" }
-        let totalCpu = active.reduce(0.5) { $0 + $1.cpuUsage }
-        let totalMem = active.reduce(120.0) { $0 + $1.memoryUsage }
-        return APCHardwareStats(cpuUsage: min(totalCpu, 100.0), memoryUsage: totalMem, maxMemory: 4096.0)
+        let committedMemoryMB = active.reduce(0.0) { $0 + $1.memoryLimitMB }
+        let maxMemoryMB = Double(VMManager.shared.loadVMConfig().allocatedMemoryGB) * 1024.0
+        return APCHardwareStats(cpuUsage: hostCPUUsage(), memoryUsage: committedMemoryMB, maxMemory: maxMemoryMB)
+    }
+
+    // MARK: - Live stats (real, sampled from cgroup + Mach host metrics)
+
+    /// Live per-container CPU% (normalized to allocated cores) and memory bytes,
+    /// read from the guest cgroup v2 files. CPU% is 0 on the first sample (it needs
+    /// a delta) and real thereafter. Nil if the container is not exec-able.
+    public func liveStats(id: String, cores: Int) -> LiveContainerStats? {
+        guard let out = engine.run(["exec", id, "sh", "-c",
+            "cat /sys/fs/cgroup/memory.current; echo ---; cat /sys/fs/cgroup/cpu.stat"]) else {
+            return nil
+        }
+        let sections = out.components(separatedBy: "---")
+        guard sections.count >= 2,
+              let memory = UInt64(sections[0].trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+
+        var usageUsec: UInt64 = 0
+        for line in sections[1].split(separator: "\n") {
+            let fields = line.split(separator: " ")
+            if fields.count == 2, fields[0] == "usage_usec", let value = UInt64(fields[1]) {
+                usageUsec = value
+            }
+        }
+
+        let now = Date()
+        var cpuPercent = 0.0
+        statsLock.lock()
+        if let prev = cpuSamples[id] {
+            let cpuDeltaUsec = Double(usageUsec &- prev.usageUsec)
+            let wallDeltaUsec = now.timeIntervalSince(prev.at) * 1_000_000.0
+            let coreCount = Double(max(cores, 1))
+            if wallDeltaUsec > 0 {
+                cpuPercent = min(cpuDeltaUsec / (wallDeltaUsec * coreCount) * 100.0, 100.0)
+            }
+        }
+        cpuSamples[id] = (usageUsec, now)
+        statsLock.unlock()
+
+        return LiveContainerStats(memoryBytes: memory, cpuPercent: cpuPercent)
+    }
+
+    /// Live host CPU utilization (%), sampled from Mach `host_statistics`. Returns
+    /// 0 on the first call (needs a tick delta) and real values thereafter.
+    public func hostCPUUsage() -> Double {
+        // HOST_CPU_LOAD_INFO_COUNT is not importable into Swift; compute it.
+        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride)
+        var info = host_cpu_load_info_data_t()
+        let kr = withUnsafeMutablePointer(to: &info) { pointer -> kern_return_t in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPointer in
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, intPointer, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+
+        let user = info.cpu_ticks.0, system = info.cpu_ticks.1
+        let idle = info.cpu_ticks.2, nice = info.cpu_ticks.3
+
+        statsLock.lock()
+        defer {
+            lastHostCPUTicks = (user, system, idle, nice)
+            statsLock.unlock()
+        }
+        guard let prev = lastHostCPUTicks else { return 0 }
+        let dUser = Double(user &- prev.user)
+        let dSystem = Double(system &- prev.system)
+        let dIdle = Double(idle &- prev.idle)
+        let dNice = Double(nice &- prev.nice)
+        let total = dUser + dSystem + dIdle + dNice
+        guard total > 0 else { return 0 }
+        return (dUser + dSystem + dNice) / total * 100.0
+    }
+
+    /// Real `container inspect <id>` output, pretty-printed. Nil if the container
+    /// is unknown or the runtime returns nothing.
+    public func inspectContainer(id: String) -> String? {
+        guard let output = engine.run(["inspect", id]), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        // Re-serialize for stable, pretty-printed display.
+        if let data = output.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data),
+           let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+           let prettyString = String(data: pretty, encoding: .utf8) {
+            return prettyString
+        }
+        return output
     }
     
     // MARK: - Internal Routing sync
     
     private func syncRoutingConfig() {
         var routes: [String: Int] = [:]
-        
-        for container in getContainers() {
-            guard container.state == "running" else { continue }
-            
-            for (idx, portStr) in container.ports.enumerated() {
-                var targetPort = 8080
-                if let hostPort = portStr.split(separator: ":").first, let parsed = Int(hostPort) {
-                    targetPort = parsed
-                } else if let parsed = Int(portStr) {
-                    targetPort = parsed
-                }
-                
-                if idx == 0 {
-                    let domain = "\(container.name).apc.local"
-                    routes[domain] = targetPort
-                } else {
-                    let domain = "\(container.name)-\(targetPort).apc.local"
-                    routes[domain] = targetPort
-                }
-            }
+
+        for container in getContainers() where container.state == "running" {
+            routes.merge(container.routeMappings) { _, new in new }
         }
-        
-        let config = ["routes": routes]
-        if let data = try? JSONSerialization.data(withJSONObject: config, options: .prettyPrinted) {
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(RoutingConfig(routes: routes)) {
             try? data.write(to: routingConfigURL)
         }
     }

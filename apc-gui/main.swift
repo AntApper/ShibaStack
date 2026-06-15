@@ -314,68 +314,100 @@ class GUIStateManager: ObservableObject {
     }
     
     func startContainer(_ id: String) {
-        do {
-            try ContainerManager.shared.startContainer(id: id)
-        } catch {
-            self.alertMessage = error.localizedDescription
-            self.showingAlert = true
-        }
-        refreshAll()
-    }
-    
-    func stopContainer(_ id: String) {
-        ContainerManager.shared.stopContainer(id: id)
-        refreshAll()
-    }
-    
-    func createContainer(name: String, image: String, ports: String) {
-        do {
-            _ = try ContainerManager.shared.runNewContainer(name: name, image: image, portMap: ports)
-        } catch {
-            self.alertMessage = error.localizedDescription
-            self.showingAlert = true
-        }
-        refreshAll()
-    }
-    
-    func deleteContainer(id: String) {
-        ContainerManager.shared.removeContainer(id: id)
-        if selectedContainerID == id {
-            selectedContainerID = nil
-            selectedContainerIDs.removeAll()
-        }
-        refreshAll()
-    }
-    
-    func startSelectedContainers() {
-        var errors: [String] = []
-        for id in selectedContainerIDs {
+        DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try ContainerManager.shared.startContainer(id: id)
             } catch {
-                errors.append(error.localizedDescription)
+                DispatchQueue.main.async {
+                    self.alertMessage = error.localizedDescription
+                    self.showingAlert = true
+                }
+            }
+            DispatchQueue.main.async {
+                self.refreshAll()
             }
         }
-        if !errors.isEmpty {
-            self.alertMessage = errors.joined(separator: "\n")
-            self.showingAlert = true
+    }
+    
+    func stopContainer(_ id: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            ContainerManager.shared.stopContainer(id: id)
+            DispatchQueue.main.async {
+                self.refreshAll()
+            }
         }
-        refreshAll()
+    }
+    
+    func createContainer(name: String, image: String, ports: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try ContainerManager.shared.runNewContainer(name: name, image: image, portMap: ports)
+            } catch {
+                DispatchQueue.main.async {
+                    self.alertMessage = error.localizedDescription
+                    self.showingAlert = true
+                }
+            }
+            DispatchQueue.main.async {
+                self.refreshAll()
+            }
+        }
+    }
+    
+    func deleteContainer(id: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            ContainerManager.shared.removeContainer(id: id)
+            DispatchQueue.main.async {
+                if self.selectedContainerID == id {
+                    self.selectedContainerID = nil
+                    self.selectedContainerIDs.removeAll()
+                }
+                self.refreshAll()
+            }
+        }
+    }
+    
+    func startSelectedContainers() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var errors: [String] = []
+            for id in self.selectedContainerIDs {
+                do {
+                    try ContainerManager.shared.startContainer(id: id)
+                } catch {
+                    errors.append(error.localizedDescription)
+                }
+            }
+            DispatchQueue.main.async {
+                if !errors.isEmpty {
+                    self.alertMessage = errors.joined(separator: "\n")
+                    self.showingAlert = true
+                }
+                self.refreshAll()
+            }
+        }
     }
     
     func stopSelectedContainers() {
-        for id in selectedContainerIDs {
-            ContainerManager.shared.stopContainer(id: id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            for id in self.selectedContainerIDs {
+                ContainerManager.shared.stopContainer(id: id)
+            }
+            DispatchQueue.main.async {
+                self.refreshAll()
+            }
         }
-        refreshAll()
     }
     
     func deleteSelectedContainers() {
-        for id in selectedContainerIDs {
-            ContainerManager.shared.removeContainer(id: id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            for id in self.selectedContainerIDs {
+                ContainerManager.shared.removeContainer(id: id)
+            }
+            DispatchQueue.main.async {
+                self.selectedContainerIDs.removeAll()
+                self.refreshAll()
+            }
         }
-        self.selectedContainerIDs.removeAll()
-        refreshAll()
     }
     
     func pullNewImage(repo: String, tag: String) {
@@ -400,7 +432,7 @@ class GUIStateManager: ObservableObject {
     }
     
     func pruneStorage() {
-        ContainerManager.shared.pruneVolumes()
+        ContainerManager.shared.pruneStorage()
         refreshAll()
     }
     
@@ -760,19 +792,10 @@ class GUIStateManager: ObservableObject {
     }
     
     func getContainerURL(_ cont: Container) -> URL {
-        var hostPort = 8080
-        if let portStr = cont.ports.first {
-            let parts = portStr.split(separator: ":")
-            if parts.count == 2, let parsed = Int(parts[0]) {
-                hostPort = parsed
-            } else if let parsed = Int(portStr) {
-                hostPort = parsed
-            }
-        }
-        
+        let hostPort = cont.hostPort ?? 8080
         if resolverConfigured {
             // Append :8080 (the non-root proxy port) to resolve the *.apc.local domain properly!
-            return URL(string: "http://\(cont.name).apc.local:8080") ?? URL(string: "http://localhost:\(hostPort)")!
+            return URL(string: "http://\(cont.primaryDomain):8080") ?? URL(string: "http://localhost:\(hostPort)")!
         }
         return URL(string: "http://localhost:\(hostPort)")!
     }
@@ -948,11 +971,17 @@ struct ContainersDashboardView: View {
     @State private var activeDetailTab: ContainerTab = .logs
     @State private var pinToBottom = true
     
-    // Interactive Terminal Simulation states
+    // Interactive Terminal states
     @State private var terminalInput = ""
-    @State private var terminalLogs: [String] = ["Welcome to Alpine Linux 3.18.2 guest terminal.", "shiba-guest:~$ "]
-    
-    // Filesystem explorer simulation states
+    @State private var terminalLogs: [String] = ["shiba-guest:~$ "]
+
+    // Real container inspect output (loaded on demand from the runtime)
+    @State private var inspectJSON = ""
+
+    // Live per-container resource sample (real, from cgroup via the runtime)
+    @State private var liveStats: LiveContainerStats? = nil
+
+    // Filesystem explorer states
     @State private var currentPath = "/Users"
     @State private var filesList: [FileItem] = []
     
@@ -987,12 +1016,12 @@ struct ContainersDashboardView: View {
                         }
                         Spacer()
                         
-                        // Inline Resource Indicators (Matches OrbStack layout)
+                        // Inline allocated-resource indicators (real values from the runtime)
                         if cont.state == "running" {
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("\(String(format: "%.1f", cont.cpuUsage))% CPU")
+                                Text("\(cont.cpuCores) vCPU")
                                     .font(.system(size: 10, design: .monospaced))
-                                Text("\(String(format: "%.1f", cont.memoryUsage)) MB")
+                                Text(formatMemoryLimit(cont.memoryLimitMB))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(.secondary)
                             }
@@ -1098,7 +1127,24 @@ struct ContainersDashboardView: View {
                             }
                         }
                     .padding()
-                    
+
+                    // Live resource strip (real cgroup sample for the running container)
+                    if selected.state == "running" {
+                        HStack(spacing: 18) {
+                            Label(liveStats.map { String(format: "%.1f%% CPU", $0.cpuPercent) } ?? "— CPU",
+                                  systemImage: "cpu")
+                            Label(liveStats.map { "\(memUsedString($0.memoryBytes)) / \(formatMemoryLimit(selected.memoryLimitMB))" } ?? "— RAM",
+                                  systemImage: "memorychip")
+                            Text("\(selected.cpuCores) vCPU allocated")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal)
+                        .padding(.bottom, 6)
+                    }
+
                     // Detail Segment Picker tabs
                     Picker("", selection: $activeDetailTab) {
                         ForEach(ContainerTab.allCases, id: \.self) { tab in
@@ -1108,6 +1154,19 @@ struct ContainersDashboardView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
                     .padding(.bottom, 8)
+                    .task(id: selected.id) {
+                        // Live cgroup sampling loop for the selected running container.
+                        liveStats = nil
+                        guard selected.state == "running" else { return }
+                        while !Task.isCancelled {
+                            let stats = await Task.detached(priority: .utility) {
+                                ContainerManager.shared.liveStats(id: selected.id, cores: selected.cpuCores)
+                            }.value
+                            if Task.isCancelled { break }
+                            liveStats = stats
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        }
+                    }
                     
                     Divider()
                     
@@ -1278,17 +1337,20 @@ struct ContainersDashboardView: View {
                         }
                         
                     case .inspect:
-                        // Syntax highlighted dynamic JSON inspector
+                        // Real `container inspect` output from the runtime
                         ScrollView {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(getContainerInspectJSON(selected))
+                                Text(inspectJSON.isEmpty ? "Loading inspect data…" : inspectJSON)
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundColor(.teal)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
                             }
                             .padding()
                         }
                         .background(Color.shibaCharcoal)
+                        .onAppear { loadInspect(selected) }
+                        .onChange(of: selected.id) { loadInspect(selected) }
                     }
                 }
             } else {
@@ -1435,43 +1497,34 @@ struct ContainersDashboardView: View {
         resetFilesList()
     }
     
-    private func getContainerInspectJSON(_ cont: Container) -> String {
-        return """
-{
-  "Id": "\(cont.id)",
-  "Created": "2026-06-14T15:00:00.124892Z",
-  "Path": "/bin/sh",
-  "Args": [],
-  "State": {
-    "Status": "\(cont.state)",
-    "Running": \(cont.state == "running" ? "true" : "false"),
-    "Pid": \(cont.state == "running" ? "1248" : "0"),
-    "ExitCode": 0,
-    "Error": ""
-  },
-  "Image": "sha256:\(UUID().uuidString.prefix(12).lowercased())",
-  "ResolvConfPath": "/etc/resolv.conf",
-  "HostnamePath": "/etc/hostname",
-  "HostsPath": "/etc/hosts",
-  "LogPath": "/var/log/containers/\(cont.id).log",
-  "Name": "/\(cont.name)",
-  "Config": {
-    "Hostname": "alpine-guest",
-    "Domainname": "apc.local",
-    "User": "root",
-    "ExposedPorts": {
-      "\(cont.ports.first ?? "8080")/tcp": {}
-    },
-    "Env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "ALPINE_VERSION=3.18.2"
-    ],
-    "Cmd": [
-      "/bin/sh"
-    ]
-  }
-}
-"""
+    // Format a live memory figure (bytes) for compact display.
+    private func memUsedString(_ bytes: UInt64) -> String {
+        let mb = Double(bytes) / (1024.0 * 1024.0)
+        if mb >= 1024 {
+            return String(format: "%.2f GB", mb / 1024.0)
+        }
+        return String(format: "%.0f MB", mb)
+    }
+
+    // Format an allocated-memory figure (MB) for compact display.
+    private func formatMemoryLimit(_ mb: Double) -> String {
+        guard mb > 0 else { return "—" }
+        if mb >= 1024 {
+            return String(format: "%.1f GB", mb / 1024.0)
+        }
+        return String(format: "%.0f MB", mb)
+    }
+
+    // Load real `container inspect` output off the main thread.
+    private func loadInspect(_ cont: Container) {
+        inspectJSON = ""
+        let id = cont.id
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.inspectContainer(id: id)
+            DispatchQueue.main.async {
+                inspectJSON = result ?? "No inspect data available for \(id)."
+            }
+        }
     }
 }
 
@@ -1498,105 +1551,157 @@ struct CreateContainerSheet: View {
     @State private var portError: String? = nil
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Launch New Container")
-                .font(.title2)
-                .fontWeight(.bold)
+        VStack(alignment: .leading, spacing: 20) {
+            // Header Area with Mascot and Branded Compliance
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.shibaOrange.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.title2)
+                        .foregroundColor(.shibaOrange)
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Launch New Container")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Text("Deploys an isolated OCI namespace mapped to your host.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.bottom, 6)
             
-            VStack(alignment: .leading, spacing: 14) {
-                // Name input
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Container Name:")
-                        .font(.headline)
-                    TextField("e.g. web-server, postgres-db", text: $name)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: name) { _, newValue in
-                            validateName(newValue)
+            Divider()
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Container Name Card
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "pencil.and.outline")
+                                .foregroundColor(.shibaOrange)
+                            Text("Container ID / Name")
+                                .font(.headline)
                         }
-                    
-                    if let err = nameError {
-                        Text(err)
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                    } else {
-                        Text("Only alphanumeric characters, dashes, and underscores allowed.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                
-                // Image input
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Container Image:")
-                        .font(.headline)
-                    
-                    if !state.images.isEmpty {
-                        Picker("Select Pulled Image:", selection: $selectedImageIndex) {
-                            ForEach(0..<state.images.count, id: \.self) { idx in
-                                let img = state.images[idx]
-                                Text("\(img.repository):\(img.tag)").tag(idx)
-                            }
-                            Text("Enter custom image...").tag(-1)
-                        }
-                        .pickerStyle(.menu)
-                        .onChange(of: selectedImageIndex) { _, newValue in
-                            if newValue != -1 {
-                                let img = state.images[newValue]
-                                image = "\(img.repository):\(img.tag)"
-                            } else {
-                                image = ""
-                            }
-                        }
-                    }
-                    
-                    if state.images.isEmpty || selectedImageIndex == -1 {
-                        TextField("e.g. alpine:latest, nginx:alpine", text: $image)
+                        
+                        TextField("e.g. web-server, dev-db", text: $name)
                             .textFieldStyle(.roundedBorder)
-                    }
-                }
-                
-                // Port mapping input
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Port Forwarding (host_port:container_port):")
-                        .font(.headline)
-                    TextField("e.g. 80:8080, 5432:5432", text: $ports)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: ports) { _, newValue in
-                            validatePorts(newValue)
+                            .onChange(of: name) { _, newValue in
+                                validateName(newValue)
+                            }
+                        
+                        if let err = nameError {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                        } else {
+                            Text("Must be alphanumeric characters, dashes, or underscores.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
                         }
-                    
-                    if let err = portError {
-                        Text(err)
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                    } else {
-                        Text("Exposes guest services to local localhost ports.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
                     }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
+                    
+                    // Container Image Picker Card
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .foregroundColor(.shibaOrange)
+                            Text("OCI Image Source")
+                                .font(.headline)
+                        }
+                        
+                        if !state.images.isEmpty {
+                            Picker("Select Pulled Image:", selection: $selectedImageIndex) {
+                                ForEach(0..<state.images.count, id: \.self) { idx in
+                                    let img = state.images[idx]
+                                    Text("\(img.repository):\(img.tag)").tag(idx)
+                                }
+                                Text("Enter custom image...").tag(-1)
+                            }
+                            .pickerStyle(.menu)
+                            .onChange(of: selectedImageIndex) { _, newValue in
+                                if newValue != -1 {
+                                    let img = state.images[newValue]
+                                    image = "\(img.repository):\(img.tag)"
+                                } else {
+                                    image = ""
+                                }
+                            }
+                        }
+                        
+                        if state.images.isEmpty || selectedImageIndex == -1 {
+                            TextField("e.g. alpine:latest, nginx:alpine", text: $image)
+                                .textFieldStyle(.roundedBorder)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
+                    
+                    // Port Forwarding Card
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "network")
+                                .foregroundColor(.shibaOrange)
+                            Text("Port Forwarding")
+                                .font(.headline)
+                        }
+                        
+                        TextField("e.g. 80:8080, 5432:5432", text: $ports)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: ports) { _, newValue in
+                                validatePorts(newValue)
+                            }
+                        
+                        if let err = portError {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundColor(.red)
+                        } else {
+                            Text("Format 'host_port:container_port'. Binds container ports to host.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
                 }
             }
             
-            Spacer()
+            Divider()
+                .padding(.vertical, 4)
             
+            // Buttons Bar
             HStack {
                 Spacer()
                 Button("Cancel") {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.large)
                 
-                Button("Run") {
+                Button("Launch") {
                     guard !name.isEmpty && !image.isEmpty && nameError == nil && portError == nil else { return }
                     state.createContainer(name: name, image: image, ports: ports)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.shibaOrange)
+                .controlSize(.large)
                 .disabled(name.isEmpty || image.isEmpty || nameError != nil || portError != nil)
             }
         }
         .padding()
-        .frame(width: 420, height: 380)
+        .frame(width: 480, height: 500)
         .onAppear {
             if !state.images.isEmpty {
                 let img = state.images[0]
@@ -2095,7 +2200,7 @@ struct NetworkDashboardView: View {
                     ForEach(state.containers.filter { $0.state == "running" }) { cont in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("\(cont.name).apc.local")
+                                Text(cont.primaryDomain)
                                     .font(.headline)
                                     .foregroundColor(.shibaOrange)
                                 Text("Container Port Mapping: \(cont.ports.joined(separator: ", "))")
@@ -2333,20 +2438,7 @@ struct MenuBarView: View {
     @EnvironmentObject var state: GUIStateManager
     @State private var copiedDocker = false
     @State private var copiedSSH = false
-    
-    // Helper to get host port from container ports list (e.g. ["8081:80"] -> 8081)
-    private func getHostPort(from ports: [String]) -> Int? {
-        for portStr in ports {
-            let parts = portStr.split(separator: ":")
-            if let first = parts.first, let parsed = Int(first) {
-                return parsed
-            } else if let parsed = Int(portStr) {
-                return parsed
-            }
-        }
-        return nil
-    }
-    
+
     var body: some View {
         VStack(spacing: 12) {
             // 1. Title & Engine status
@@ -2515,7 +2607,7 @@ struct MenuBarView: View {
                                 Spacer()
                                 
                                 // Quick Port Open / Safari shortcut
-                                if cont.state == "running", let hostPort = getHostPort(from: cont.ports) {
+                                if cont.state == "running", let hostPort = cont.hostPort {
                                     Button(action: {
                                         if let url = URL(string: "http://localhost:\(hostPort)") {
                                             NSWorkspace.shared.open(url)

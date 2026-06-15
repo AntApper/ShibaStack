@@ -257,11 +257,9 @@ Usage:
         }
         
     case "prune":
-        print("Performing system disk and volume prune...")
-        let beforeCount = containerManager.getVolumes().count
-        containerManager.pruneVolumes()
-        let afterCount = containerManager.getVolumes().count
-        print("Prune completed successfully. Reclaimed volumes: \(beforeCount - afterCount).")
+        print("Reclaiming disk space (removing unreferenced images and snapshots)...")
+        containerManager.pruneStorage()
+        print("Prune completed successfully.")
         
     case "usb":
         guard args.count > 2 else {

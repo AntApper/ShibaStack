@@ -151,6 +151,23 @@ Optimize and expand ShibaStack to achieve feature parity with OrbStack using App
   2. **Zero-Mock Verification Tool:** Aggregates real IOKit-scanned physical USB device attachments and outputs a pristine, fully detailed markdown diagnostics report directly to the user's `Desktop` as `shibastack-diagnostics.md`.
   3. **Polished Settings Integration:** Integrated the "Collect Diagnostics" button seamlessly inside the "Troubleshooting & Maintenance" card layout in the Settings dashboard.
 
+## Continuous Parity Loop (resumed 2026-06-14)
+
+Goal restated by user: full OrbStack-parity container manager on Apple's `container` system only. Review every button/feature/backend connection for real correctness, fix bugs, improve UI/UX. Ground truth established this session: **Apple `container` v0.5.0 is installed AND running** on this machine, so backend changes are verified end-to-end against the real runtime.
+
+- **Iteration P1 (verified against live runtime):**
+  1. **Fixed broken volume create** — `container volume create` takes the name positionally; the code passed an invalid `--name` flag. Verified create+remove against the real CLI.
+  2. **Fixed broken storage prune** — there is no `container volume prune`; repointed `pruneStorage()` (renamed from `pruneVolumes`) to the real `container image prune`. Updated CLI + GUI callers.
+  3. **Real container inspect** — deleted the fabricated `getContainerInspectJSON` (random image SHA, hardcoded PID 1248, fixed timestamp); added `ContainerManager.inspectContainer(id:)` calling real `container inspect`, wired the Inspect tab to load it off-thread. Verified 2225 chars of real runtime config.
+  4. **Real per-container resources** — removed hardcoded `cpuUsage 0.3 / memoryUsage 22.4` and the synthetic fallback log line. Parse real `configuration.resources {cpus, memoryInBytes}` from list JSON into new `Container.cpuCores` / `memoryLimitMB`; GUI shows real allocated vCPU + memory. `getStats()` now reports real committed memory vs the VM's configured ceiling (was `reduce(0.5)/reduce(120.0)/4096` fakes).
+  - Architecture grounding from a prior session (Container model depth, ContainerEngine seam, GuestProtocol contract, RoutingRegistry) underpins this — the ContainerEngine seam made the live verification trivial.
+- **Known real-CLI facts for future iterations:** `container stats` is NOT installed (plugin absent) — live CPU/mem must come from cgroup reads via `container exec <id> cat /sys/fs/cgroup/...`. `container logs -f` / `-n` exist (streaming logs feasible). `inspect` JSON carries `initProcess.environment` (env vars) and `mounts` — env/mounts tabs are now cheap. No native `restart` (stop+start is correct). No `container update` (can't add ports to a running container — addPortForward honesty needed).
+- **Iteration P2 (verified against live runtime):**
+  1. **Live per-container CPU + memory** — `ContainerManager.liveStats(id:cores:)` reads real cgroup v2 (`memory.current` + `cpu.stat usage_usec`) through `container exec`; CPU% is a normalized delta between two samples. Wired into the container detail as a live strip driven by a `.task(id:)` 2s sampling loop. Verified: real 66.7 MB live memory + real CPU delta on an idle nginx (~0.06%).
+  2. **Real host CPU** — `hostCPUUsage()` samples Mach `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas; `getStats()` now returns real host CPU (was hardcoded 0). Drives the dashboard CPU ring. Verified 13.6% live.
+  3. **Docker-bridge honest status** (parallel agent) — removed fabricated "Up 15 minutes"; confirmed the runtime exposes NO container timestamp, so report honest "Up"/"Exited". Go module builds + tests pass.
+- **Backlog (next iterations):** streaming logs (`logs -f`); env/mounts inspect tabs from real inspect JSON; image-pull progress parsing; addPortForward no-op honesty + network status health checks; container file browser shows host `/Users` not container rootfs; live stats in the container list (not just detail).
+
 ## Reflection Checkpoint (Loop 20/100)
 
 ### 1. What has been accomplished so far?
