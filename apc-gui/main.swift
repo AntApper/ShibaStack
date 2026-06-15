@@ -1313,7 +1313,7 @@ struct ContainersDashboardView: View {
         }
         
         // Forward the shell command natively to our guest Go agent over the loopback/VSOCK pipe!
-        VSOCKManager.shared.sendGuestCommand(action: "exec", cmd: [input]) { output, error in
+        VSOCKManager.shared.sendGuestCommand(action: "exec", name: state.selectedContainer?.name ?? "", cmd: [input]) { output, error in
             DispatchQueue.main.async {
                 if let _ = error {
                     self.terminalLogs.append("Error: The ShibaStack guest agent (vminitd) is unreachable. Please ensure the virtual machine is running.")
