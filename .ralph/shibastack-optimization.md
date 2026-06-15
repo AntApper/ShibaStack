@@ -204,7 +204,10 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   1. **Real image build** — probed `container build`: needs an explicit `-f` (resolved vs CWD, not context dir), and output is BUFFERED not streamed in piped mode (full log at completion, like image pull). Added `ContainerManager.buildImage(tag:dockerfilePath:contextDir:)` that runs real `container build -t <tag> -f <abs Dockerfile> <context>`, drains the pipe to EOF then reaps exit status, returning (success, full log). Verified: real build succeeds, log contains "Successfully built", image appears in `image list`; failure path returns the real error.
   2. **GUI "Build Image" card** in the Images view — tag field, NSOpenPanel context-folder picker, optional Dockerfile path, async build off-thread with a spinner, then shows the real build log (scrollable) + success/failure alert + refreshes images. No fabricated progress.
 - **Release v0.2.0:** cut after image-build (major capability) — rebuilt branded DMG, published to GitHub Releases.
-- **Backlog (next iterations):** per-container actions polish; image push/tag; container create from a built image; broader QA.
+- **Iteration P12 (image tag + push):**
+  1. **Real tag + push** — probed the CLI (`image tag <source> <target>`, `image push <reference>`, auth via `container registry login`). Added a shared `runCapturing(_:)` helper (combined stdout+stderr + exit status) and `ContainerManager.tagImage` / `pushImage` on top of it; refactored `buildImage` to use it. Verified: tag creates a new ref that appears in `image list`; push to a dead local registry fails HONESTLY with the real error ("Connection refused") — nothing leaves the machine.
+  2. **GUI** — each image row now has an ellipsis menu: **Tag…** (sheet to enter the new reference), **Push** (async, with a "Pushing image…" banner and an honest success/failure alert — push failures surface the real registry error, e.g. login required), and **Delete**.
+- **Backlog (next iterations):** "Run from image" shortcut (prefill CreateContainerSheet from a selected image); registry login UI; per-container actions polish (kill/copy-id); a few real APCCore unit tests via the test target.
 
 ## Reflection Checkpoint (Loop 20/100)
 

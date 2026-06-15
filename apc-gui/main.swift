@@ -210,6 +210,7 @@ class GUIStateManager: ObservableObject {
     @Published var installingAppleContainer: Bool = false
     @Published var isPullingImage: Bool = false
     @Published var isBuildingImage: Bool = false
+    @Published var isPushingImage: Bool = false
     @Published var lastBuildLog: String = ""
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
@@ -465,6 +466,33 @@ class GUIStateManager: ObservableObject {
                     : "Build failed — see the build log for details."
                 self.showingAlert = true
                 self.refreshAll()
+            }
+        }
+    }
+
+    func tagImage(source: String, target: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.tagImage(source: source, target: target)
+            DispatchQueue.main.async {
+                self.alertMessage = result.success
+                    ? "Tagged \(source) → \(target)."
+                    : "Tag failed: \(result.output.isEmpty ? "unknown error" : result.output)"
+                self.showingAlert = true
+                self.refreshAll()
+            }
+        }
+    }
+
+    func pushImage(reference: String) {
+        self.isPushingImage = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.pushImage(reference: reference)
+            DispatchQueue.main.async {
+                self.isPushingImage = false
+                self.alertMessage = result.success
+                    ? "Pushed \(reference)."
+                    : "Push failed (registry login may be required):\n\(result.output.isEmpty ? "unknown error" : result.output)"
+                self.showingAlert = true
             }
         }
     }
@@ -1801,6 +1829,9 @@ struct ImagesDashboardView: View {
     @State private var buildTag = ""
     @State private var buildContext = ""
     @State private var buildDockerfile = ""
+    @State private var showingTagSheet = false
+    @State private var tagSource = ""
+    @State private var tagTarget = ""
 
     private func chooseContextFolder() {
         let panel = NSOpenPanel()
@@ -1936,13 +1967,30 @@ struct ImagesDashboardView: View {
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 12)
-                            
-                            Button(action: { state.removeImage(img.id) }) {
-                                Image(systemName: "trash")
-                                    .foregroundColor(.red)
+
+                            Menu {
+                                Button {
+                                    tagSource = "\(img.repository):\(img.tag)"
+                                    tagTarget = ""
+                                    showingTagSheet = true
+                                } label: { Label("Tag…", systemImage: "tag") }
+
+                                Button {
+                                    state.pushImage(reference: "\(img.repository):\(img.tag)")
+                                } label: { Label("Push", systemImage: "arrow.up.circle") }
+
+                                Divider()
+
+                                Button(role: .destructive) {
+                                    state.removeImage(img.id)
+                                } label: { Label("Delete", systemImage: "trash") }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundColor(.secondary)
                             }
-                            .buttonStyle(.plain)
-                            .help("Delete Image")
+                            .menuStyle(.borderlessButton)
+                            .frame(width: 44)
+                            .disabled(state.isPushingImage)
                         }
                         .padding()
                         .background(Color(NSColor.controlBackgroundColor))
@@ -1954,8 +2002,42 @@ struct ImagesDashboardView: View {
         }
         .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
+        .overlay(alignment: .top) {
+            if state.isPushingImage {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Pushing image to registry…").font(.caption)
+                }
+                .padding(8)
+                .background(.ultraThinMaterial)
+                .cornerRadius(8)
+                .padding(.top, 8)
+            }
+        }
+        .sheet(isPresented: $showingTagSheet) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Tag Image").font(.title2).fontWeight(.bold)
+                Text("Source: \(tagSource)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.secondary)
+                TextField("New reference (e.g. registry.example.com/app:1.0)", text: $tagTarget)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showingTagSheet = false }
+                    Button("Tag") {
+                        state.tagImage(source: tagSource, target: tagTarget)
+                        showingTagSheet = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(tagTarget.isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(width: 440)
+        }
     }
-    
+
     private func startPullImage() {
         state.pullNewImage(repo: pullRepo, tag: pullTag)
         pullRepo = ""

@@ -228,10 +228,27 @@ public final class ContainerManager: @unchecked Sendable {
     public func buildImage(tag: String, dockerfilePath: String?, contextDir: String) -> (success: Bool, log: String) {
         // `container build` resolves -f relative to CWD, so always pass an absolute Dockerfile path.
         let dockerfile = (dockerfilePath?.isEmpty == false) ? dockerfilePath! : "\(contextDir)/Dockerfile"
+        let result = runCapturing(["build", "-t", tag, "-f", dockerfile, contextDir])
+        return (result.success, result.output)
+    }
 
+    /// Create a new reference for an existing image: `container image tag <source> <target>`.
+    public func tagImage(source: String, target: String) -> (success: Bool, output: String) {
+        return runCapturing(["image", "tag", source, target])
+    }
+
+    /// Push an image to its registry: `container image push <reference>`. Requires a prior
+    /// `container registry login`; returns the real failure (e.g. unauthorized) honestly.
+    public func pushImage(reference: String) -> (success: Bool, output: String) {
+        return runCapturing(["image", "push", reference])
+    }
+
+    /// Run the real `container` binary capturing combined stdout+stderr and the exit status.
+    /// Blocking — call off the main thread. (The CLI buffers some output and writes it at exit.)
+    private func runCapturing(_ arguments: [String]) -> (success: Bool, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/local/bin/container")
-        process.arguments = ["build", "-t", tag, "-f", dockerfile, contextDir]
+        process.arguments = arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -242,10 +259,9 @@ public final class ContainerManager: @unchecked Sendable {
             // Drain to EOF first (avoids a pipe-buffer deadlock), then reap the exit status.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let log = String(data: data, encoding: .utf8) ?? ""
-            return (process.terminationStatus == 0, log)
+            return (process.terminationStatus == 0, String(data: data, encoding: .utf8) ?? "")
         } catch {
-            return (false, "Failed to launch container build: \(error.localizedDescription)")
+            return (false, "Failed to launch container: \(error.localizedDescription)")
         }
     }
 
