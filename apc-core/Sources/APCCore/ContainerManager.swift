@@ -358,6 +358,14 @@ public final class ContainerManager: @unchecked Sendable {
         return (dUser + dSystem + dNice) / total * 100.0
     }
 
+    /// Run a shell command inside a running container via real `container exec`,
+    /// scoped to that container's namespace. stderr is merged into stdout so the
+    /// terminal shows real error text. Returns nil only if exec itself can't run
+    /// (e.g. the container isn't running); an empty string means "ran, no output".
+    public func execInContainer(id: String, command: String) -> String? {
+        return engine.run(["exec", id, "sh", "-c", "\(command) 2>&1"])
+    }
+
     /// Real environment variables + mounts for a container, decoded from inspect.
     public func containerInfo(id: String) -> ContainerInfo? {
         guard let output = engine.run(["inspect", id]), let data = output.data(using: .utf8) else {

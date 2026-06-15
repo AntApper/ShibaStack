@@ -1426,25 +1426,29 @@ struct ContainersDashboardView: View {
             return
         }
         
-        // Forward the shell command natively to our guest Go agent over the loopback/VSOCK pipe!
-        VSOCKManager.shared.sendGuestCommand(action: "exec", name: state.selectedContainer?.name ?? "", cmd: [input]) { output, error in
+        guard let container = state.selectedContainer else {
+            terminalLogs.append("No container selected.")
+            terminalLogs.append("shiba-guest:~$ ")
+            terminalInput = ""
+            return
+        }
+
+        let id = container.id
+        terminalInput = ""
+        // Run directly inside the selected container via real `container exec`.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let output = ContainerManager.shared.execInContainer(id: id, command: input)
             DispatchQueue.main.async {
-                if let _ = error {
-                    self.terminalLogs.append("Error: The ShibaStack guest agent (vminitd) is unreachable. Please ensure the virtual machine is running.")
-                    self.terminalLogs.append("shiba-guest:~$ ")
-                } else if let output = output {
-                    // Display the real output returned by the guest OCI execution spine!
-                    let lines = output.components(separatedBy: "\n")
-                    for line in lines {
-                        if !line.isEmpty {
-                            self.terminalLogs.append(line)
-                        }
+                if let output = output {
+                    for line in output.components(separatedBy: "\n") where !line.isEmpty {
+                        self.terminalLogs.append(line)
                     }
-                    self.terminalLogs.append("shiba-guest:~$ ")
+                } else {
+                    self.terminalLogs.append("Error: could not exec in '\(id)'. Is the container running?")
                 }
+                self.terminalLogs.append("shiba-guest:~$ ")
             }
         }
-        terminalInput = ""
     }
     
     private func logLineColored(_ line: String) -> Text {
