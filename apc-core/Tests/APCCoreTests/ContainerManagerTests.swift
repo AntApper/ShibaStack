@@ -53,6 +53,28 @@ final class ContainerManagerTests: XCTestCase {
         XCTAssertEqual(web.ports, ["8081:80"])             // host:guest reassembled
     }
 
+    func testListContainerDirectoryParsesLsOutput() {
+        let lsOutput = """
+        total 8
+        drwxr-xr-x   22 root     root          4096 Jun 15 02:44 .
+        drwxr-xr-x   22 root     root          4096 Jun 15 02:44 ..
+        drwxr-xr-x    2 root     root          4096 Apr 15 04:51 bin
+        -rwxr-xr-x    1 root     root          1620 May 22 18:25 entrypoint.sh
+        """
+        // listContainerDirectory runs `exec <id> ls -la <path>` — keyed by "exec".
+        let manager = makeManager(responses: ["exec": lsOutput])
+
+        let entries = manager.listContainerDirectory(id: "web", path: "/")
+        let byName = Dictionary(uniqueKeysWithValues: entries.map { ($0.name, $0) })
+
+        XCTAssertNil(byName["."])                                   // "." is dropped
+        XCTAssertEqual(byName[".."]?.isDirectory, true)             // ".." kept for navigation
+        XCTAssertEqual(byName["bin"]?.isDirectory, true)
+        XCTAssertEqual(byName["entrypoint.sh"]?.isDirectory, false)
+        XCTAssertEqual(byName["entrypoint.sh"]?.size, "1.6 KB")     // bytes humanised
+        XCTAssertEqual(entries.first?.name, "..")                   // ".." sorts first
+    }
+
     func testGetContainersIsEmptyWhenEngineReturnsNothing() {
         let manager = makeManager(responses: [:])
         XCTAssertEqual(manager.getContainers().count, 0)

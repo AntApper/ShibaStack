@@ -243,6 +243,43 @@ public final class ContainerManager: @unchecked Sendable {
         return runCapturing(["image", "push", reference])
     }
 
+    /// Log in to a registry. The password is written to the process's STDIN via
+    /// `--password-stdin` — it never appears in the argument list and is never logged or stored.
+    public func registryLogin(server: String, username: String, password: String) -> (success: Bool, output: String) {
+        var arguments = ["registry", "login"]
+        if !username.isEmpty { arguments.append(contentsOf: ["--username", username]) }
+        arguments.append(contentsOf: ["--password-stdin", server])
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/container")
+        process.arguments = arguments
+
+        let outPipe = Pipe()
+        let inPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = outPipe
+        process.standardInput = inPipe
+
+        do {
+            try process.run()
+            // Feed the password over stdin, then close to signal EOF. Not in argv.
+            if let data = password.data(using: .utf8) {
+                inPipe.fileHandleForWriting.write(data)
+            }
+            try? inPipe.fileHandleForWriting.close()
+            let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus == 0, String(data: out, encoding: .utf8) ?? "")
+        } catch {
+            return (false, "Failed to launch container: \(error.localizedDescription)")
+        }
+    }
+
+    /// Log out from a registry: `container registry logout <server>`.
+    public func registryLogout(server: String) -> (success: Bool, output: String) {
+        return runCapturing(["registry", "logout", server])
+    }
+
     /// Run the real `container` binary capturing combined stdout+stderr and the exit status.
     /// Blocking — call off the main thread. (The CLI buffers some output and writes it at exit.)
     private func runCapturing(_ arguments: [String]) -> (success: Bool, output: String) {

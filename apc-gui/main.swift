@@ -211,6 +211,7 @@ class GUIStateManager: ObservableObject {
     @Published var isPullingImage: Bool = false
     @Published var isBuildingImage: Bool = false
     @Published var isPushingImage: Bool = false
+    @Published var isAuthenticating: Bool = false
     @Published var lastBuildLog: String = ""
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
@@ -494,6 +495,32 @@ class GUIStateManager: ObservableObject {
                 self.alertMessage = result.success
                     ? "Pushed \(reference)."
                     : "Push failed (registry login may be required):\n\(result.output.isEmpty ? "unknown error" : result.output)"
+                self.showingAlert = true
+            }
+        }
+    }
+
+    func registryLogin(server: String, username: String, password: String) {
+        self.isAuthenticating = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.registryLogin(server: server, username: username, password: password)
+            DispatchQueue.main.async {
+                self.isAuthenticating = false
+                self.alertMessage = result.success
+                    ? "Logged in to \(server)."
+                    : "Login failed: \(result.output.isEmpty ? "unknown error" : result.output)"
+                self.showingAlert = true
+            }
+        }
+    }
+
+    func registryLogout(server: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.registryLogout(server: server)
+            DispatchQueue.main.async {
+                self.alertMessage = result.success
+                    ? "Logged out of \(server)."
+                    : "Logout failed: \(result.output.isEmpty ? "unknown error" : result.output)"
                 self.showingAlert = true
             }
         }
@@ -1858,6 +1885,10 @@ struct ImagesDashboardView: View {
     @State private var showingTagSheet = false
     @State private var tagSource = ""
     @State private var tagTarget = ""
+    @State private var showingLoginSheet = false
+    @State private var loginServer = "docker.io"
+    @State private var loginUsername = ""
+    @State private var loginPassword = ""
 
     private func chooseContextFolder() {
         let panel = NSOpenPanel()
@@ -1874,10 +1905,17 @@ struct ImagesDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Container Images")
-                    .font(.title)
-                    .fontWeight(.bold)
-                
+                HStack {
+                    Text("Container Images")
+                        .font(.title)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button(action: { showingLoginSheet = true }) {
+                        Label("Registry Login", systemImage: "person.badge.key")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 // Visual Pull Image Box (Matches OrbStack capabilities)
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Pull New Image")
@@ -2066,6 +2104,41 @@ struct ImagesDashboardView: View {
             }
             .padding(20)
             .frame(width: 440)
+        }
+        .sheet(isPresented: $showingLoginSheet) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Registry Login").font(.title2).fontWeight(.bold)
+                Text("Credentials are sent to the registry via the container runtime. The password is passed over stdin — never stored or logged by ShibaStack.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                TextField("Server (e.g. docker.io)", text: $loginServer)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Username", text: $loginUsername)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Password or token", text: $loginPassword)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Button("Log Out") {
+                        state.registryLogout(server: loginServer)
+                        showingLoginSheet = false
+                    }
+                    .disabled(loginServer.isEmpty || state.isAuthenticating)
+                    Spacer()
+                    Button("Cancel") { showingLoginSheet = false }
+                    Button(state.isAuthenticating ? "Logging in…" : "Log In") {
+                        state.registryLogin(server: loginServer, username: loginUsername, password: loginPassword)
+                        loginPassword = ""
+                        showingLoginSheet = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(loginServer.isEmpty || loginPassword.isEmpty || state.isAuthenticating)
+                }
+            }
+            .padding(20)
+            .frame(width: 460)
         }
     }
 
