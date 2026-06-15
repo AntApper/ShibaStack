@@ -42,7 +42,7 @@ cp apc-core/.build/release/apc build/ShibaStack.app/Contents/Resources/bin/apc
 # 4. Compile SwiftUI Desktop Dashboard & Menu Bar app
 echo "Compiling ShibaStack SwiftUI application..."
 swiftc -O -sdk "$(xcrun --show-sdk-path)" -parse-as-library \
-	-framework SwiftUI -framework AppKit -framework Virtualization -framework IOKit \
+	-framework SwiftUI -framework AppKit -framework Virtualization -framework IOKit -framework Network \
 	-o build/ShibaStack.app/Contents/MacOS/ShibaStack \
 	apc-gui/main.swift apc-core/Sources/APCCore/*.swift
 
@@ -68,7 +68,7 @@ cat <<'EOF' >build/ShibaStack.app/Contents/Info.plist
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
