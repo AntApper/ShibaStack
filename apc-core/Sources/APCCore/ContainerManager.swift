@@ -271,6 +271,17 @@ public final class ContainerManager: @unchecked Sendable {
 
     /// Reclaim disk by removing unreferenced images and snapshots.
     /// The runtime has no `volume prune`; image prune is the real disk-reclaim path.
+    /// Real total bytes used by all volume images on disk (sum of each volume's
+    /// backing `.img` file size). 0 if none.
+    public func volumeStorageBytes() -> Int64 {
+        let fm = FileManager.default
+        return getVolumes().reduce(Int64(0)) { total, volume in
+            guard let attrs = try? fm.attributesOfItem(atPath: volume.mountPoint),
+                  let bytes = attrs[.size] as? Int64 else { return total }
+            return total + bytes
+        }
+    }
+
     public func pruneStorage() {
         _ = engine.run(["image", "prune"])
     }

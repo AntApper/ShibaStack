@@ -430,6 +430,12 @@ class GUIStateManager: ObservableObject {
         ContainerManager.shared.pruneStorage()
         refreshAll()
     }
+
+    // Persist allocation settings immediately so slider/toggle changes stick (applied on next VM start).
+    func persistVMConfig() {
+        let config = VMConfig(allocatedCPUs: allocatedCPUs, allocatedMemoryGB: allocatedMemoryGB, enableRosetta: enableRosetta)
+        VMManager.shared.saveVMConfig(config)
+    }
     
     // USB passthrough needs a running hypervisor (the VM); scanning is always live.
     var usbPassthroughAvailable: Bool {
@@ -1861,7 +1867,23 @@ struct VolumesDashboardView: View {
     @State private var showingCreateVolumeSheet = false
     @State private var newVolumeName = ""
     @State private var newVolumeMountPoint = ""
-    
+    @State private var volumeBytes: Int64 = 0
+
+    private func loadVolumeBytes() {
+        DispatchQueue.global(qos: .utility).async {
+            let bytes = ContainerManager.shared.volumeStorageBytes()
+            DispatchQueue.main.async { volumeBytes = bytes }
+        }
+    }
+
+    private func formatStorageBytes(_ bytes: Int64) -> String {
+        let b = Double(bytes)
+        if b >= 1_073_741_824 { return String(format: "%.2f GB", b / 1_073_741_824) }
+        if b >= 1_048_576 { return String(format: "%.1f MB", b / 1_048_576) }
+        if b >= 1024 { return String(format: "%.1f KB", b / 1024) }
+        return "\(bytes) B"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -1884,35 +1906,28 @@ struct VolumesDashboardView: View {
                     }
                 }
                 
-                // Storage Capacity Utilization Board
+                // Real storage stats (sum of actual volume image sizes)
                 HStack(spacing: 24) {
-                    // Circular ring gauge
                     ZStack {
                         Circle()
-                            .stroke(Color.secondary.opacity(0.15), lineWidth: 12)
+                            .stroke(Color.shibaOrange.opacity(0.25), lineWidth: 12)
                             .frame(width: 80, height: 80)
-                        
-                        Circle()
-                            .trim(from: 0.0, to: 0.42)
-                            .stroke(Color.shibaOrange, style: StrokeStyle(lineWidth: 12, lineCap: .round))
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(.degrees(-90))
-                        
-                        VStack {
-                            Text("42%")
-                                .font(.headline)
-                            Text("Used")
+                        VStack(spacing: 0) {
+                            Text("\(state.volumes.count)")
+                                .font(.system(size: 26, weight: .bold))
+                                .foregroundColor(.shibaOrange)
+                            Text(state.volumes.count == 1 ? "Volume" : "Volumes")
                                 .font(.system(size: 8))
                                 .foregroundColor(.secondary)
                         }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Disk Allocation Statistics")
                             .font(.headline)
-                        Text("Total Volume Capacity: 10.0 GB")
+                        Text("Total volume storage: \(formatStorageBytes(volumeBytes))")
                             .font(.subheadline)
-                        Text("Active Mounts Storage: 155.8 MB | Reclaimable Space: 1.6 MB")
+                        Text("Reclaim unreferenced image layers with One-Click Disk Prune.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -1921,6 +1936,7 @@ struct VolumesDashboardView: View {
                 .padding()
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(10)
+                .onAppear { loadVolumeBytes() }
                 
                 // Card list of volumes
                 VStack(spacing: 8) {
@@ -2354,6 +2370,7 @@ struct SettingsDashboardView: View {
                             set: { state.allocatedCPUs = Int($0) }
                         ), in: 1...8, step: 1)
                         .tint(.shibaOrange)
+                        .onChange(of: state.allocatedCPUs) { state.persistVMConfig() }
                         
                         HStack {
                             Label("Memory Allocation", systemImage: "memorychip")
@@ -2367,6 +2384,7 @@ struct SettingsDashboardView: View {
                             set: { state.allocatedMemoryGB = Int($0) }
                         ), in: 1...16, step: 1)
                         .tint(.shibaOrange)
+                        .onChange(of: state.allocatedMemoryGB) { state.persistVMConfig() }
                         
                         Divider()
                         
@@ -2381,8 +2399,9 @@ struct SettingsDashboardView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(.shibaOrange)
+                        .onChange(of: state.enableRosetta) { state.persistVMConfig() }
                     }
-                    
+
                     HStack {
                         Text("Reboot required to apply modifications to guest kernels.")
                             .font(.caption)
@@ -2704,9 +2723,11 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .padding(.vertical, 2)
                 
-                // Copy SSH Connection Command
+                // Copy a real container shell command (there is no guest SSH server;
+                // a shell comes from `container exec`, which actually works).
                 Button(action: {
-                    let cmd = "ssh -p 2222 root@localhost"
+                    let name = state.containers.first(where: { $0.state == "running" })?.name ?? "<container>"
+                    let cmd = "container exec -it \(name) sh"
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(cmd, forType: .string)
                     copiedSSH = true
@@ -2717,7 +2738,7 @@ struct MenuBarView: View {
                     HStack {
                         Image(systemName: copiedSSH ? "checkmark.circle.fill" : "key.fill")
                             .foregroundColor(copiedSSH ? .green : .shibaGold)
-                        Text(copiedSSH ? "Copied SSH Command!" : "Copy Guest SSH Command")
+                        Text(copiedSSH ? "Copied Shell Command!" : "Copy Container Shell Command")
                             .font(.caption)
                         Spacer()
                     }

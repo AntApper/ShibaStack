@@ -183,7 +183,12 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   2. **Fixed the broken DOCKER_HOST button** — it copied `tcp://127.0.0.1:2375` but the bridge listens on the unix socket `~/.apc/docker.sock`; now copies `export DOCKER_HOST="unix://~/.apc/docker.sock"` (real socket).
   3. **USB attach honesty** — removed the fake dummy-disk-image attach (`USB disk mount emulation content` .img) and the silent mock-mode "success". `attachDevice` now throws a clear "passthrough requires the hypervisor" error when no VM is running; the UI shows an honest yellow note and disables the attach toggle when unavailable, surfacing the real reason via the alert. Scanning stays real (IOKit).
 - **Honesty audit (parallel Explore agent) — remaining fabricated data to fix next:** Storage dashboard hardcoded ring 42% + "10.0 GB" capacity + "155.8 MB / 1.6 MB" mount/reclaimable (≈line 1889–1908) [CRITICAL]; VirtioFS paths hardcoded "/Users"/"/host/Users" (~1966); CPU/RAM sliders don't persist until VM restart (no onChange→saveVMConfig, ~2329) [HIGH]; MenuBar SSH command hardcoded port 2222 (~2686) [HIGH]; kernel/initrd download writes "Mock ... stub" text files on failure (~637) [MEDIUM].
-- **Backlog (next iterations):** the audit items above (storage real stats, slider persistence, SSH port, kernel stub honesty); live stats in container LIST; image build (`container build`) UI.
+- **Iteration P7 (verified against live runtime):**
+  1. **Real storage stats** — replaced the fabricated 42% ring / "10.0 GB" / "155.8 MB / 1.6 MB" with the real volume count and `ContainerManager.volumeStorageBytes()` (sum of actual volume `.img` sizes). Verified: real 512 GB total from the live n8n_data volume.
+  2. **Slider/Rosetta persistence** — CPU/RAM sliders + Rosetta toggle now persist immediately via `persistVMConfig()`→`VMManager.saveVMConfig` (onChange), instead of only on VM restart.
+  3. **SSH button honesty** — there's no guest SSH server; the "Copy Guest SSH Command" (`ssh -p 2222`) now copies a real working `container exec -it <running-container> sh` shell command.
+- **Backlog (next iterations):** VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build (`container build`) UI.
+- **Documentation/branding/license iteration (requested by user):** make README + docs honest (real OCI via Apple container, real DNS/proxy/networking, honest VM-entitlement + USB limits), generate branded README assets via the nanobanana MCP per docs/BRANDING.md, set the (blank) GitHub repo description, and add an "open but monetizable" license (FSL/BSL vs Apache+open-core — pending user pick).
 
 ## Reflection Checkpoint (Loop 20/100)
 
