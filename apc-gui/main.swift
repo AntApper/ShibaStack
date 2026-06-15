@@ -977,12 +977,16 @@ struct ContainersDashboardView: View {
 
     // Real container inspect output (loaded on demand from the runtime)
     @State private var inspectJSON = ""
+    @State private var detailInfo: ContainerInfo? = nil
 
     // Live per-container resource sample (real, from cgroup via the runtime)
     @State private var liveStats: LiveContainerStats? = nil
 
-    // Filesystem explorer states
-    @State private var currentPath = "/Users"
+    // Live-streamed log lines (real `container logs -f`) for the running container
+    @State private var streamedLogs: [String] = []
+
+    // Container filesystem explorer states
+    @State private var currentPath = "/"
     @State private var filesList: [FileItem] = []
     
     var body: some View {
@@ -1179,9 +1183,15 @@ struct ContainersDashboardView: View {
                                     .toggleStyle(.checkbox)
                                     .font(.caption)
                                     .padding(.leading, 8)
+                                if selected.state == "running" {
+                                    Label("Live", systemImage: "dot.radiowaves.left.and.right")
+                                        .font(.caption2)
+                                        .foregroundColor(.green)
+                                        .padding(.leading, 6)
+                                }
                                 Spacer()
                                 Button(action: {
-                                    let allLogs = selected.logs.joined(separator: "\n")
+                                    let allLogs = displayLogs(for: selected).joined(separator: "\n")
                                     let pasteboard = NSPasteboard.general
                                     pasteboard.clearContents()
                                     pasteboard.setString(allLogs, forType: .string)
@@ -1193,13 +1203,13 @@ struct ContainersDashboardView: View {
                                 .padding(6)
                             }
                             .background(Color(NSColor.windowBackgroundColor))
-                            
+
                             Divider()
-                            
+
                             ScrollView {
                                 ScrollViewReader { scrollProxy in
                                     LazyVStack(alignment: .leading, spacing: 6) {
-                                        ForEach(Array(selected.logs.enumerated()), id: \.offset) { index, log in
+                                        ForEach(Array(displayLogs(for: selected).enumerated()), id: \.offset) { index, log in
                                             Text(log)
                                                 .font(.system(.caption, design: .monospaced))
                                                 .foregroundColor(.shibaCream)
@@ -1208,21 +1218,35 @@ struct ContainersDashboardView: View {
                                         }
                                     }
                                     .padding()
-                                    .onChange(of: selected.logs) { oldValue, newValue in
-                                        if pinToBottom, !newValue.isEmpty {
-                                            withAnimation {
-                                                scrollProxy.scrollTo(newValue.count - 1, anchor: .bottom)
-                                            }
-                                        }
-                                    }
-                                    .onAppear {
-                                        if pinToBottom, !selected.logs.isEmpty {
-                                            scrollProxy.scrollTo(selected.logs.count - 1, anchor: .bottom)
+                                    .onChange(of: streamedLogs.count) { _, newCount in
+                                        if pinToBottom, newCount > 0 {
+                                            scrollProxy.scrollTo(newCount - 1, anchor: .bottom)
                                         }
                                     }
                                 }
                             }
                             .background(Color.shibaCharcoal)
+                        }
+                        .task(id: selected.id) {
+                            // Stream real `container logs -f` while this running container's Logs tab is open.
+                            streamedLogs = []
+                            guard selected.state == "running" else { return }
+                            let streamer = LogStreamer()
+                            await withTaskCancellationHandler {
+                                streamer.start(containerId: selected.id, tail: 200) { line in
+                                    DispatchQueue.main.async {
+                                        streamedLogs.append(line)
+                                        if streamedLogs.count > 3000 {
+                                            streamedLogs.removeFirst(streamedLogs.count - 3000)
+                                        }
+                                    }
+                                }
+                                while !Task.isCancelled {
+                                    try? await Task.sleep(nanoseconds: 500_000_000)
+                                }
+                            } onCancel: {
+                                streamer.stop()
+                            }
                         }
                         
                     case .terminal:
@@ -1280,20 +1304,20 @@ struct ContainersDashboardView: View {
                         .background(Color.shibaCharcoal)
                         
                     case .files:
-                        // Interactive container filesystem directory tree browser (navigating native VirtioFS host mounts)
+                        // Real container rootfs browser via `container exec ls -la`
                         VStack(alignment: .leading, spacing: 0) {
                             HStack {
                                 Button(action: {
-                                    if currentPath != "/Users" {
-                                        currentPath = "/Users"
-                                        resetFilesList()
+                                    if currentPath != "/" {
+                                        currentPath = "/"
+                                        loadContainerFiles(selected)
                                     }
                                 }) {
-                                    Label("Share (/Users)", systemImage: "folder.fill")
+                                    Label("Root (/)", systemImage: "folder.fill")
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundColor(.shibaOrange)
-                                
+
                                 Text(">  \(currentPath)")
                                     .font(.system(.subheadline, design: .monospaced))
                                     .foregroundColor(.secondary)
@@ -1301,45 +1325,81 @@ struct ContainersDashboardView: View {
                             }
                             .padding(10)
                             .background(Color(NSColor.controlBackgroundColor))
-                            
+
                             Divider()
-                            
-                            List(filesList) { file in
-                                HStack {
-                                    Image(systemName: file.isDirectory ? "folder.fill" : "doc.fill")
-                                        .foregroundColor(file.isDirectory ? .shibaOrange : .secondary)
-                                    
-                                    Text(file.name)
-                                        .font(.system(.body, design: .monospaced))
-                                    
-                                    Spacer()
-                                    
-                                    Text(file.size)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    
-                                    Text(file.modDate)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .frame(width: 80, alignment: .trailing)
-                                }
-                                .padding(.vertical, 4)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    if file.isDirectory {
-                                        enterFileDirectory(file.name)
+
+                            if selected.state != "running" {
+                                ContentUnavailableView("Container Stopped", systemImage: "folder.badge.questionmark", description: Text("Start the container to browse its filesystem."))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else {
+                                List(filesList) { file in
+                                    HStack {
+                                        Image(systemName: file.isDirectory ? "folder.fill" : "doc.fill")
+                                            .foregroundColor(file.isDirectory ? .shibaOrange : .secondary)
+
+                                        Text(file.name)
+                                            .font(.system(.body, design: .monospaced))
+
+                                        Spacer()
+
+                                        Text(file.size)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+
+                                        Text(file.modDate)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .frame(width: 90, alignment: .trailing)
+                                    }
+                                    .padding(.vertical, 4)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if file.isDirectory {
+                                            enterFileDirectory(file.name, in: selected)
+                                        }
                                     }
                                 }
                             }
                         }
                         .onAppear {
-                            resetFilesList()
+                            currentPath = "/"
+                            loadContainerFiles(selected)
+                        }
+                        .onChange(of: selected.id) {
+                            currentPath = "/"
+                            loadContainerFiles(selected)
                         }
                         
                     case .inspect:
-                        // Real `container inspect` output from the runtime
+                        // Real `container inspect`: structured env + mounts, then raw JSON
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if let info = detailInfo {
+                                    if !info.mounts.isEmpty {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("MOUNTS").font(.caption2).foregroundColor(.shibaOrange)
+                                            ForEach(info.mounts, id: \.destination) { mount in
+                                                Text("\(mount.destination)  ←  \(mount.source)")
+                                                    .font(.system(.caption2, design: .monospaced))
+                                                    .foregroundColor(.shibaCream)
+                                                    .textSelection(.enabled)
+                                            }
+                                        }
+                                    }
+                                    if !info.environment.isEmpty {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("ENVIRONMENT").font(.caption2).foregroundColor(.shibaOrange)
+                                            ForEach(info.environment, id: \.self) { env in
+                                                Text(env)
+                                                    .font(.system(.caption2, design: .monospaced))
+                                                    .foregroundColor(.shibaCream)
+                                                    .textSelection(.enabled)
+                                            }
+                                        }
+                                    }
+                                    Divider()
+                                    Text("RAW INSPECT").font(.caption2).foregroundColor(.shibaOrange)
+                                }
                                 Text(inspectJSON.isEmpty ? "Loading inspect data…" : inspectJSON)
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundColor(.teal)
@@ -1418,85 +1478,36 @@ struct ContainersDashboardView: View {
         return Text(line).foregroundColor(.shibaCream)
     }
     
-    private func fetchDirectoryContents(at path: String) -> [FileItem] {
-        let fm = FileManager.default
-        var items: [FileItem] = []
-        
-        // Parent folder link ".." if not at root (/Users or /)
-        if path != "/Users" && path != "/" {
-            items.append(FileItem(name: "..", isDirectory: true, size: "--", modDate: ""))
+    // Browse the real container rootfs via `container exec ls -la`, off the main thread.
+    private func loadContainerFiles(_ cont: Container) {
+        guard cont.state == "running" else {
+            filesList = []
+            return
         }
-        
-        do {
-            let contents = try fm.contentsOfDirectory(atPath: path)
-            for item in contents {
-                if item.hasPrefix(".") {
-                    continue
-                }
-                
-                let fullPath = (path as NSString).appendingPathComponent(item)
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: fullPath, isDirectory: &isDir) {
-                    let attrs = try? fm.attributesOfItem(atPath: fullPath)
-                    let sizeVal = attrs?[.size] as? Int64 ?? 0
-                    let modDateVal = attrs?[.modificationDate] as? Date ?? Date()
-                    
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "MMM dd HH:mm"
-                    let modDateStr = formatter.string(from: modDateVal)
-                    
-                    let sizeStr: String
-                    if isDir.boolValue {
-                        sizeStr = "4.0 KB"
-                    } else {
-                        if sizeVal > 1024 * 1024 * 1024 {
-                            sizeStr = String(format: "%.1f GB", Double(sizeVal) / (1024 * 1024 * 1024))
-                        } else if sizeVal > 1024 * 1024 {
-                            sizeStr = String(format: "%.1f MB", Double(sizeVal) / (1024 * 1024))
-                        } else if sizeVal > 1024 {
-                            sizeStr = String(format: "%.1f KB", Double(sizeVal) / 1024)
-                        } else {
-                            sizeStr = "\(sizeVal) B"
-                        }
-                    }
-                    
-                    items.append(FileItem(name: item, isDirectory: isDir.boolValue, size: sizeStr, modDate: modDateStr))
-                }
-            }
-        } catch {
-            print("Failed to read directory \(path): \(error.localizedDescription)")
-            items.append(FileItem(name: "Error: \(error.localizedDescription)", isDirectory: false, size: "--", modDate: ""))
-        }
-        
-        return items.sorted { a, b in
-            if a.name == ".." { return true }
-            if b.name == ".." { return false }
-            if a.isDirectory && !b.isDirectory { return true }
-            if !a.isDirectory && b.isDirectory { return false }
-            return a.name.lowercased() < b.name.lowercased()
+        let id = cont.id
+        let path = currentPath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let entries = ContainerManager.shared.listContainerDirectory(id: id, path: path)
+            let items = entries.map { FileItem(name: $0.name, isDirectory: $0.isDirectory, size: $0.size, modDate: $0.modified) }
+            DispatchQueue.main.async { filesList = items }
         }
     }
-    
-    private func resetFilesList() {
-        filesList = fetchDirectoryContents(at: currentPath)
-    }
-    
-    private func enterFileDirectory(_ dir: String) {
+
+    private func enterFileDirectory(_ dir: String, in cont: Container) {
         if dir == ".." {
-            let ns = currentPath as NSString
-            let parent = ns.deletingLastPathComponent
-            if parent == "/" || parent == "" {
-                currentPath = "/Users"
-            } else {
-                currentPath = parent
-            }
+            let parent = (currentPath as NSString).deletingLastPathComponent
+            currentPath = parent.isEmpty ? "/" : parent
         } else {
-            let ns = currentPath as NSString
-            currentPath = ns.appendingPathComponent(dir)
+            currentPath = (currentPath as NSString).appendingPathComponent(dir)
         }
-        resetFilesList()
+        loadContainerFiles(cont)
     }
     
+    // Live streamed logs while running; otherwise the one-shot logs from the last refresh.
+    private func displayLogs(for cont: Container) -> [String] {
+        cont.state == "running" ? streamedLogs : cont.logs
+    }
+
     // Format a live memory figure (bytes) for compact display.
     private func memUsedString(_ bytes: UInt64) -> String {
         let mb = Double(bytes) / (1024.0 * 1024.0)
@@ -1515,14 +1526,17 @@ struct ContainersDashboardView: View {
         return String(format: "%.0f MB", mb)
     }
 
-    // Load real `container inspect` output off the main thread.
+    // Load real `container inspect` output (raw JSON + structured env/mounts) off-thread.
     private func loadInspect(_ cont: Container) {
         inspectJSON = ""
+        detailInfo = nil
         let id = cont.id
         DispatchQueue.global(qos: .userInitiated).async {
             let result = ContainerManager.shared.inspectContainer(id: id)
+            let info = ContainerManager.shared.containerInfo(id: id)
             DispatchQueue.main.async {
                 inspectJSON = result ?? "No inspect data available for \(id)."
+                detailInfo = info
             }
         }
     }

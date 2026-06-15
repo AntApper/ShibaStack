@@ -364,6 +364,68 @@ public final class ContainerManager: @unchecked Sendable {
         return (dUser + dSystem + dNice) / total * 100.0
     }
 
+    /// Real environment variables + mounts for a container, decoded from inspect.
+    public func containerInfo(id: String) -> ContainerInfo? {
+        guard let output = engine.run(["inspect", id]), let data = output.data(using: .utf8) else {
+            return nil
+        }
+        struct InspectItem: Codable {
+            struct Configuration: Codable {
+                struct InitProcess: Codable { let environment: [String]? }
+                struct Mount: Codable { let source: String?; let destination: String? }
+                let initProcess: InitProcess?
+                let mounts: [Mount]?
+            }
+            let configuration: Configuration
+        }
+        guard let items = try? JSONDecoder().decode([InspectItem].self, from: data),
+              let item = items.first else {
+            return nil
+        }
+        let env = item.configuration.initProcess?.environment ?? []
+        let mounts = (item.configuration.mounts ?? []).compactMap { mount -> ContainerMount? in
+            guard let source = mount.source, let destination = mount.destination else { return nil }
+            return ContainerMount(source: source, destination: destination)
+        }
+        return ContainerInfo(environment: env, mounts: mounts)
+    }
+
+    /// List a directory inside a running container via `ls -la`. Empty if the
+    /// container is not running or the path is unreadable.
+    public func listContainerDirectory(id: String, path: String) -> [ContainerFileEntry] {
+        guard let out = engine.run(["exec", id, "ls", "-la", path]) else { return [] }
+        var entries: [ContainerFileEntry] = []
+        for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(raw)
+            if line.hasPrefix("total ") { continue }
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard parts.count >= 9 else { continue }
+            let perms = parts[0]
+            let isDir = perms.hasPrefix("d")
+            let isLink = perms.hasPrefix("l")
+            let modified = parts[5...7].joined(separator: " ")
+            var name = parts[8...].joined(separator: " ")
+            if name == "." { continue }
+            if isLink, let arrow = name.range(of: " -> ") { name = String(name[..<arrow.lowerBound]) }
+            let size = (isDir || isLink) ? "—" : Self.humanFileSize(parts[4])
+            entries.append(ContainerFileEntry(name: name, isDirectory: isDir, size: size, modified: modified))
+        }
+        return entries.sorted { a, b in
+            if a.name == ".." { return b.name != ".." }
+            if b.name == ".." { return false }
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.lowercased() < b.name.lowercased()
+        }
+    }
+
+    private static func humanFileSize(_ raw: String) -> String {
+        guard let bytes = Double(raw) else { return raw }
+        if bytes >= 1_073_741_824 { return String(format: "%.1f GB", bytes / 1_073_741_824) }
+        if bytes >= 1_048_576 { return String(format: "%.1f MB", bytes / 1_048_576) }
+        if bytes >= 1024 { return String(format: "%.1f KB", bytes / 1024) }
+        return "\(Int(bytes)) B"
+    }
+
     /// Real `container inspect <id>` output, pretty-printed. Nil if the container
     /// is unknown or the runtime returns nothing.
     public func inspectContainer(id: String) -> String? {

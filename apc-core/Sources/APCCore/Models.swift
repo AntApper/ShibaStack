@@ -117,6 +117,44 @@ public struct RoutingConfig: Codable, Equatable {
     }
 }
 
+/// One entry in a container's filesystem, parsed from `ls -la` inside the guest.
+public struct ContainerFileEntry: Sendable, Hashable, Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let isDirectory: Bool
+    public let size: String
+    public let modified: String
+
+    public init(name: String, isDirectory: Bool, size: String, modified: String) {
+        self.name = name
+        self.isDirectory = isDirectory
+        self.size = size
+        self.modified = modified
+    }
+}
+
+/// A real mount on a container, from inspect JSON.
+public struct ContainerMount: Sendable, Hashable {
+    public let source: String
+    public let destination: String
+
+    public init(source: String, destination: String) {
+        self.source = source
+        self.destination = destination
+    }
+}
+
+/// Real environment + mounts for a container, decoded from `container inspect`.
+public struct ContainerInfo: Sendable {
+    public let environment: [String]
+    public let mounts: [ContainerMount]
+
+    public init(environment: [String], mounts: [ContainerMount]) {
+        self.environment = environment
+        self.mounts = mounts
+    }
+}
+
 /// A live, real-time resource sample for a single running container, read from
 /// the guest cgroup v2 files via `container exec`.
 public struct LiveContainerStats: Sendable, Equatable {
