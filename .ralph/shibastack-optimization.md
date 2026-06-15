@@ -146,6 +146,10 @@ Optimize and expand ShibaStack to achieve feature parity with OrbStack using App
   1. **Dynamic Guest OS Isolation Assertions:** Added a strict test case verifying that command execution runs strictly inside the secure guest container namespace (`cat /etc/alpine-release` returns standard Alpine release versions like `3.23.4`), while asserting that running the same command on the host Mac fails cleanly (proving genuine namespace isolation).
   2. **Real-time Docker API compliance Assertions:** Added automated curl requests over the local UNIX socket bridge during integration tests to assert that the active container `test-web` and `nginx:alpine` image are mapped and translated with 100% compliant Docker JSON payloads.
   3. **100% Verified Pass Results:** Verified that the entire un-mocked suite runs perfectly and passes with 100% success on the real OCI container runtime.
+- **2026-06-14 (Loop 21-23):** Built a native Markdown Diagnostics Collector:
+  1. **Real-time System Status Aggregator:** Added `generateDiagnosticsReport()` to `GUIStateManager` in `apc-gui/main.swift` to gather macOS system metrics, host-allocated resources (Cores, memory limits, Rosetta state), real OCI container listings, and local active images/volumes lists dynamically.
+  2. **Zero-Mock Verification Tool:** Aggregates real IOKit-scanned physical USB device attachments and outputs a pristine, fully detailed markdown diagnostics report directly to the user's `Desktop` as `shibastack-diagnostics.md`.
+  3. **Polished Settings Integration:** Integrated the "Collect Diagnostics" button seamlessly inside the "Troubleshooting & Maintenance" card layout in the Settings dashboard.
 
 ## Reflection Checkpoint (Loop 10/100)
 
