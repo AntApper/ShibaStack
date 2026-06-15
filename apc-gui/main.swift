@@ -179,6 +179,7 @@ struct APCApp: App {
 // MARK: - State Manager (Unifies APCCore with SwiftUI)
 class GUIStateManager: ObservableObject {
     @Published var vmState: String = "stopped"
+    @Published var runtimeRunning: Bool = true   // Apple container apiserver status
     @Published var containers: [Container] = []
     @Published var images: [ContainerImage] = []
     @Published var volumes: [Volume] = []
@@ -253,14 +254,16 @@ class GUIStateManager: ObservableObject {
             guard let self = self else { return }
             
             let state = VMManager.shared.getVMState()
+            let runtime = ContainerManager.shared.isRuntimeRunning()
             let conts = ContainerManager.shared.getContainers()
             let imgs = ContainerManager.shared.getImages()
             let vols = ContainerManager.shared.getVolumes()
             let usb = USBManager.shared.scanDevices()
             let stats = ContainerManager.shared.getStats()
-            
+
             DispatchQueue.main.async {
                 self.vmState = state
+                self.runtimeRunning = runtime
                 self.containers = conts
                 self.images = imgs
                 self.volumes = vols
@@ -1118,7 +1121,22 @@ struct ContainersDashboardView: View {
                     .buttonStyle(.borderedProminent)
                 }
                 .padding()
-                
+
+                if !state.runtimeRunning {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
+                        Text("The container engine is not running. Start it with")
+                            .font(.caption)
+                        Text("container system start")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.shibaOrange)
+                            .textSelection(.enabled)
+                        Spacer()
+                    }
+                    .padding(8)
+                    .background(Color.yellow.opacity(0.1))
+                }
+
                 List(state.containers, selection: $state.selectedContainerIDs) { cont in
                     HStack(spacing: 12) {
                         Circle()

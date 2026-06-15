@@ -382,6 +382,12 @@ public final class ContainerManager: @unchecked Sendable {
         }
     }
 
+    /// True if the Apple container apiserver is running. When it isn't, list/stats
+    /// calls return nothing — so the UI can say "engine off" instead of "no containers".
+    public func isRuntimeRunning() -> Bool {
+        return runCapturing(["system", "status"]).output.contains("apiserver is running")
+    }
+
     /// Reclaim disk by removing unreferenced images and snapshots.
     /// The runtime has no `volume prune`; image prune is the real disk-reclaim path.
     /// Real total bytes used by all volume images on disk (sum of each volume's
