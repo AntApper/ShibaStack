@@ -188,7 +188,12 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   2. **Slider/Rosetta persistence** — CPU/RAM sliders + Rosetta toggle now persist immediately via `persistVMConfig()`→`VMManager.saveVMConfig` (onChange), instead of only on VM restart.
   3. **SSH button honesty** — there's no guest SSH server; the "Copy Guest SSH Command" (`ssh -p 2222`) now copies a real working `container exec -it <running-container> sh` shell command.
 - **Backlog (next iterations):** VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build (`container build`) UI.
-- **Documentation/branding/license iteration (requested by user):** make README + docs honest (real OCI via Apple container, real DNS/proxy/networking, honest VM-entitlement + USB limits), generate branded README assets via the nanobanana MCP per docs/BRANDING.md, set the (blank) GitHub repo description, and add an "open but monetizable" license (FSL/BSL vs Apache+open-core — pending user pick).
+- **Iteration P8 (docs + branding + repo):**
+  1. **Branded assets via nanobanana MCP** — generated a README hero banner + app logo matching docs/BRANDING.md (Shiba mascot, orange #E06D3A / cream #F7EAD3 / charcoal #1C1C1E / gold). Saved to docs/assets/ (banner.png, banner-alt.png, logo.png). (First attempt blocked by an expired API key; user renewed it and regen succeeded.)
+  2. **Honest README rewrite** — replaced the inaccurate README (claimed working USB passthrough, wrong app/DMG names, wrong clone URL, overstated the VM). Now: banner, accurate feature list (real OCI/cgroup stats/streaming logs/exec/inspect/networking), an explicit "engine is only Apple container; Docker = registry + compat socket" note, an "Honest status" section on the VM-entitlement + USB limits, correct build/CLI/structure.
+  3. **GitHub repo description set** (was blank) via gh.
+  - **License: PENDING user pick.** Recommended BSL 1.1 (source-available, converts to Apache 2.0). For reference: OpenStack=Apache 2.0; OrbStack=fully proprietary. README links LICENSE with a "being finalized" note; LICENSE file to be added once chosen.
+- **Backlog (next iterations):** add the chosen LICENSE + README badge; VirtioFS hardcoded paths (~1976); kernel/initrd "Mock stub" fallback honesty (~637); live stats in container LIST; image build UI.
 
 ## Reflection Checkpoint (Loop 20/100)
 

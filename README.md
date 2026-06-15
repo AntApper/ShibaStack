@@ -1,99 +1,109 @@
-# ShibaStack - Apple Private Container (APC)
+<p align="center">
+  <img src="docs/assets/banner.png" alt="ShibaStack — Native containers on Apple Silicon" width="100%" />
+</p>
 
-Apple Private Container (APC) is an open-source, lightweight macOS Menu Bar application and companion suite for Apple's native container project. APC wraps Apple's Swift `Containerization` and `Virtualization` APIs to manage OCI-compliant containers natively on Apple Silicon with near-zero overhead.
-
-It does not require Docker to be installed, utilizes Alpine-based native environments, runs a custom user-space DNS resolver, supports USB 3.0 hardware accessory passthrough (macOS 15+), and compiles into a native macOS app bundle packaged in a distributable DMG.
-
----
-
-## Technical Features
-
-- **Native Hypervisor Engine:** Leverages Apple's native `Virtualization.framework` with optimized Alpine kernels, dynamic memory ballooning, and VirtioFS sharing of the host `/Users` directory.
-- **Hardware Passthrough:** Supports dynamic scan, attachment, and detachment of physical USB accessories from the Mac host to the guest container via USB 3.0 XHCI.
-- **Zero-Privilege Networking:** Custom DNS resolver and reverse proxy routed through a user-space listener. No root or sudo modifications are required.
-- **Dynamic Local DNS:** Automatic resolution of running container domains (e.g., `http://web-app.apc.local` maps directly to the container's guest port).
-- **Native SwiftUI App:** A clean, multi-pane macOS dashboard with a sidebar menu, real-time CPU/RAM progress charts, container logs viewer, persistent volume managers, and a Menu Bar controller.
+<p align="center">
+  <b>Native, Docker-free container manager for Apple Silicon.</b><br/>
+  Runs OCI containers on Apple's <code>container</code> runtime — with a SwiftUI dashboard, live stats,
+  user-space DNS + reverse proxy, and a Docker-CLI-compatible socket.
+</p>
 
 ---
 
-## Project Structure
+ShibaStack is a native macOS app and CLI suite for managing Linux containers on Apple Silicon using **Apple's own `container` runtime** — no Docker daemon required. It adds a polished SwiftUI dashboard and menu-bar app, a zero-sudo user-space network layer that gives every container a friendly `*.apc.local` domain, and a Docker-API-compatible socket so existing Docker tooling can talk to the Apple-container engine.
 
-```
-.
-├── README.md                           # Project introduction & overview
-├── apc-core                            # Virtualization core engine (Swift Package)
-│   ├── Package.swift                   # Swift Package Manager configuration
-│   └── Sources
-│       ├── APCCore                     # Core shared library targets
-│       │   ├── ContainerManager.swift  # Local container manager & state persistence
-│       │   ├── Models.swift            # Standard JSON & SwiftUI models
-│       │   ├── USBManager.swift        # IOKit USB scanning & Virtualization attachment
-│       │   └── VMManager.swift         # Hypervisor boots, ballooning, & directory sharing
-│       ├── apc-cli                     # command-line interface executable
-│       │   └── main.swift              # CLI command parser and outputs
-│       └── apc-daemon                  # Background daemon target
-│           └── main.swift              # Daemon virtualization event loop
-├── apc-gui                             # SwiftUI macOS Dashboard & Menu Bar Extra
-│   └── main.swift                      # Multi-pane dashboard layouts and state bridges
-├── apc-network                         # High-performance networking helper
-│   └── main.go                         # Go UDP DNS server & HTTP proxy
-├── docs
-│   ├── ARCHITECTURE.md                 # Detailed VM, networking, and USB designs
-│   └── DEVELOPER.md                    # Local build instructions and debugging
-└── scripts
-    ├── build-dmg.sh                    # Complete compiler and packaging pipeline
-    └── test-integration.sh             # End-to-end integration test runner
-```
+> **The container engine is only Apple's `container`** (`/usr/local/bin/container`). "Docker" appears here in just two places: the default image-registry hostname `docker.io` (Docker Hub), and an optional compatibility socket that *translates* Docker API calls into `container` commands. There is no Docker daemon.
 
 ---
 
-## Installation & Compilation
+## Features
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/ant/ShibaStack.git
-   cd ShibaStack
-   ```
-
-2. **Compile and Package into a DMG:**
-   Ensure Go and Xcode/Swift are installed, and execute the automated packaging pipeline:
-   ```bash
-   ./scripts/build-dmg.sh
-   ```
-   This generates a polished, ready-to-use `ApplePrivateContainer.dmg` file in the root directory.
-
-3. **Install the Application:**
-   Open the generated DMG and drag `Apple Private Container.app` into your `/Applications` directory.
+- **Real OCI containers on Apple's runtime** — create, run, exec, inspect, start/stop/delete, all driven through Apple's `container` CLI. Container, image, and volume lists are live.
+- **Live resource metrics** — real per-container CPU + memory sampled from the guest cgroup, plus real host CPU, shown live in the dashboard.
+- **Streaming logs & in-container shell** — follow `container logs -f` live, and run a shell directly inside the selected container via `container exec`.
+- **Container filesystem & inspect** — browse the real container root filesystem, and view real `inspect` output including environment variables and mounts.
+- **Zero-privilege networking** — a user-space UDP DNS resolver for `*.apc.local` and an HTTP reverse proxy with a loop guard, no root or sudo. Service status is probed live, not assumed.
+- **Docker-CLI compatibility** — a `~/.apc/docker.sock` bridge translates Docker API requests into `container` commands, so `docker ps`, Testcontainers, and similar tools work against the Apple engine.
+- **Native SwiftUI app + menu bar** — a multi-pane dashboard with container, image, and volume managers, and a menu-bar controller.
 
 ---
 
-## CLI Usage Guide
+## Requirements
 
-The suite includes the `apc` command-line helper, which provides quick control over virtual machines and containers.
+- Apple Silicon Mac, macOS 15 or later
+- Apple's `container` runtime at `/usr/local/bin/container` — [apple/container releases](https://github.com/apple/container/releases)
+- Go and the Xcode / Swift toolchain (to build from source)
+
+---
+
+## Honest status
+
+ShibaStack drives a **real** OCI runtime. Two areas are limited by the platform, and the UI says so plainly:
+
+- **Virtualization VM** — running a VM through `Virtualization.framework` needs Apple's restricted `com.apple.security.virtualization` entitlement. On ad-hoc-signed development builds the VM lifecycle falls back to a local agent; container operations stay real because Apple's `container` already runs each container in its own lightweight VM.
+- **USB passthrough** — host USB *scanning* is real (IOKit). *Attaching* a device to a guest requires a running VM with the entitlement; when unavailable the UI disables it and explains why instead of faking success.
+
+---
+
+## Build
 
 ```bash
-# Start/Stop the hypervisor core
+git clone https://github.com/AntApper/ShibaStack.git
+cd ShibaStack
+./scripts/build-dmg.sh
+```
+
+This compiles `apc-core` (Swift), `apc-network` and `guest-vminitd` (Go), and the SwiftUI app, then packages `ShibaStack.dmg` in the repo root. Open it and drag `ShibaStack.app` into `/Applications`.
+
+---
+
+## CLI
+
+The suite ships an `apc` command-line helper:
+
+```bash
+# Hypervisor / engine
 apc start
 apc stop
 apc status
 
-# Manage containers
+# Containers
 apc ps
-apc run web-app alpine-nginx 80:8080
-apc logs web-app
+apc run <name> <image> <hostPort>:<containerPort>
+apc logs <name>
 
-# List and route physical USB accessories
+# USB accessories (scan is live; attach needs a running VM)
 apc usb list
-apc usb attach 0x05AC:0x0322:F0THC70UCSA00007
 
-# Clean storage and unused persistent cache
+# Reclaim unreferenced image layers
 apc prune
 ```
 
 ---
 
-## Development & Contribution
+## Project structure
 
-Refer to the internal documentation for advanced setups:
-- To understand VM and network routing architectures, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- For details on debugging Swift Virtualization binaries and running integration tests, see [docs/DEVELOPER.md](docs/DEVELOPER.md).
+```
+.
+├── apc-core            # Swift package: container/VM/USB/VSOCK managers + apc CLI + daemon
+│   └── Sources/APCCore # ContainerManager, VMManager, USBManager, NetworkStatus, models, ...
+├── apc-gui             # SwiftUI macOS dashboard & menu-bar app (main.swift)
+├── apc-network         # Go user-space DNS, reverse proxy (RoutingRegistry), docker.sock bridge
+├── guest-vminitd       # Go guest agent (VSOCK exec spine)
+├── docs                # ARCHITECTURE.md, DEVELOPER.md, BRANDING.md
+└── scripts             # build-dmg.sh, integration / stress / GUI tests
+```
+
+---
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — VM, networking, and USB designs
+- [Developer guide](docs/DEVELOPER.md) — local builds and debugging
+- [Branding](docs/BRANDING.md) — palette, typography, and mascot guidelines
+
+---
+
+## License
+
+See [`LICENSE`](LICENSE). _(Being finalized — source-available, with a path to a fully open license over time.)_
