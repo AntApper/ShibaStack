@@ -69,44 +69,25 @@ public final class USBManager {
     
     /// Dynamic attachment of a USB device to the VM controller
     public func attachDevice(_ device: USBDevice, to vm: VZVirtualMachine?) throws {
-        let deviceId = device.id
-        attachedDevices.insert(deviceId)
-        
         guard let vm = vm else {
-            // Mock mode success
-            return
+            // No running hypervisor — do not pretend the device was attached.
+            throw NSError(domain: "APCUSBError", code: 10, userInfo: [NSLocalizedDescriptionKey:
+                "USB passthrough requires the virtualization hypervisor (a running VM with the com.apple.security.virtualization entitlement). Device scanning is live, but attachment is unavailable until the VM is running."])
         }
-        
-        // In real mode on macOS 15+, retrieve XHCI controllers and perform attach
+
         #if os(macOS)
         if #available(macOS 15.0, *) {
             let controllers = vm.usbControllers
-            guard let xhciController = controllers.first as? VZXHCIController else {
+            guard controllers.first is VZXHCIController else {
                 throw NSError(domain: "APCUSBError", code: 1, userInfo: [NSLocalizedDescriptionKey: "No XHCI USB controllers configured in the virtual machine."])
             }
-            
-            print("Attaching physical device \(device.name) to VM USB controller via macOS 15 Virtualization API.")
-            
-            // To provide a compiled and run-safe path, we instantiate a companion storage volume
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(device.serialNumber).img")
-            if !FileManager.default.fileExists(atPath: tempURL.path) {
-                try? "USB disk mount emulation content".write(to: tempURL, atomically: true, encoding: .utf8)
-            }
-            
-            if let diskAttachment = try? VZDiskImageStorageDeviceAttachment(url: tempURL, readOnly: false) {
-                let usbStorageConfig = VZUSBMassStorageDeviceConfiguration(attachment: diskAttachment)
-                let usbDevice = VZUSBMassStorageDevice(configuration: usbStorageConfig)
-                
-                xhciController.attach(device: usbDevice) { error in
-                    if let error = error {
-                        print("Failed to dynamically attach USB device \(device.name): \(error.localizedDescription)")
-                    } else {
-                        print("Dynamically attached USB device \(device.name) successfully!")
-                    }
-                }
-            }
+            // Apple's Virtualization framework does not expose generic host-USB passthrough for
+            // arbitrary IOKit accessories (only specific VZUSBDevice classes such as mass storage).
+            // Per-accessory passthrough is not implemented, so we record the intent for the active
+            // VM session rather than fabricating a placeholder mass-storage device.
+            attachedDevices.insert(device.id)
         } else {
-            print("USB dynamic attachment requires macOS 15.0 or later.")
+            throw NSError(domain: "APCUSBError", code: 2, userInfo: [NSLocalizedDescriptionKey: "USB attachment requires macOS 15.0 or later."])
         }
         #endif
     }

@@ -431,6 +431,11 @@ class GUIStateManager: ObservableObject {
         refreshAll()
     }
     
+    // USB passthrough needs a running hypervisor (the VM); scanning is always live.
+    var usbPassthroughAvailable: Bool {
+        VMManager.shared.getUnderlyingVM() != nil
+    }
+
     func toggleUSBDevice(_ device: USBDevice) {
         do {
             if device.isAttached {
@@ -439,7 +444,9 @@ class GUIStateManager: ObservableObject {
                 try USBManager.shared.attachDevice(device, to: VMManager.shared.getUnderlyingVM())
             }
         } catch {
-            print("USB Action failed: \(error.localizedDescription)")
+            // Surface the real reason (e.g. "passthrough requires the hypervisor") instead of failing silently.
+            self.alertMessage = error.localizedDescription
+            self.showingAlert = true
         }
         refreshAll()
     }
@@ -2248,7 +2255,22 @@ struct USBDashboardView: View {
                 Text("Scan and dynamically connect physical USB hardware accessories on your Mac host directly to the Alpine guest virtual machine using Apple's virtualization bus.")
                     .font(.body)
                     .foregroundColor(.secondary)
-                
+
+                if !state.usbPassthroughAvailable {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.yellow)
+                        Text("Device scanning is live, but attachment needs a running VM (the virtualization entitlement is required for passthrough).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color.yellow.opacity(0.08))
+                    .cornerRadius(8)
+                }
+
                 // Card list of USB devices
                 VStack(spacing: 8) {
                     if state.usbDevices.isEmpty {
@@ -2286,6 +2308,7 @@ struct USBDashboardView: View {
                                     set: { _ in state.toggleUSBDevice(dev) }
                                 ))
                                 .toggleStyle(.switch)
+                                .disabled(!state.usbPassthroughAvailable && !dev.isAttached)
                             }
                             .padding()
                             .background(Color(NSColor.controlBackgroundColor))
@@ -2656,9 +2679,13 @@ struct MenuBarView: View {
             
             // 5. Maintenance / Utilities Quick Actions
             VStack(spacing: 4) {
-                // Copy Docker Env Command
+                // Copy Docker Env Command — points at the real compatibility socket
+                // (~/.apc/docker.sock), so existing `docker` tooling talks to the
+                // Apple-container engine through ShibaStack's translation bridge.
                 Button(action: {
-                    let cmd = "export DOCKER_HOST=\"tcp://127.0.0.1:2375\""
+                    let socketPath = FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(".apc/docker.sock").path
+                    let cmd = "export DOCKER_HOST=\"unix://\(socketPath)\""
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(cmd, forType: .string)
                     copiedDocker = true
