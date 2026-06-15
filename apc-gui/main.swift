@@ -368,7 +368,16 @@ class GUIStateManager: ObservableObject {
             }
         }
     }
-    
+
+    func killContainer(_ id: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            ContainerManager.shared.killContainer(id: id)
+            DispatchQueue.main.async {
+                self.refreshAll()
+            }
+        }
+    }
+
     func createContainer(name: String, image: String, ports: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -1212,6 +1221,13 @@ struct ContainersDashboardView: View {
                                         Label("Restart", systemImage: "arrow.clockwise")
                                     }
                                     .buttonStyle(.bordered)
+
+                                    Button(action: { state.killContainer(selected.id) }) {
+                                        Label("Force Kill", systemImage: "bolt.fill")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .tint(.red)
+                                    .help("Send SIGKILL (immediate, ungraceful)")
                                 } else {
                                     Button(action: { state.startContainer(selected.id) }) {
                                         Label("Start", systemImage: "play.fill")
@@ -1219,6 +1235,15 @@ struct ContainersDashboardView: View {
                                     .buttonStyle(.borderedProminent)
                                 }
                                 
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(selected.id, forType: .string)
+                                }) {
+                                    Label("Copy ID", systemImage: "doc.on.doc")
+                                }
+                                .buttonStyle(.bordered)
+                                .help("Copy the container ID")
+
                                 Button(role: .destructive, action: { state.deleteContainer(id: selected.id) }) {
                                     Label("Delete", systemImage: "trash")
                                 }

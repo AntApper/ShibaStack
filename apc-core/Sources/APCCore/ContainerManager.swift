@@ -143,16 +143,23 @@ public final class ContainerManager: @unchecked Sendable {
     
     public func runNewContainer(name: String, image: String, portMap: String) throws -> Container {
         var args = ["run", "-d", "--name", name]
-        
+
         // Parse port map (e.g., 8085:8080)
         if !portMap.isEmpty {
             args.append(contentsOf: ["-p", portMap])
         }
         args.append(image)
-        
-        _ = engine.run(args)
+
+        // Capture exit status + stderr so real failures (bad image, duplicate name,
+        // bad port) surface to the caller instead of failing silently.
+        let result = runCapturing(args)
+        guard result.success else {
+            let message = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "ContainerManager", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                message.isEmpty ? "Failed to create container '\(name)'." : message])
+        }
         syncRoutingConfig()
-        
+
         // Provisional representation; the next refresh replaces it with real runtime data.
         return Container(
             id: name,
@@ -169,6 +176,12 @@ public final class ContainerManager: @unchecked Sendable {
     public func removeContainer(id: String) {
         _ = engine.run(["stop", id])
         _ = engine.run(["rm", id])
+        syncRoutingConfig()
+    }
+
+    /// Force-kill a container (sends SIGKILL), distinct from a graceful stop.
+    public func killContainer(id: String) {
+        _ = engine.run(["kill", id])
         syncRoutingConfig()
     }
     

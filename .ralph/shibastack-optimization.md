@@ -213,7 +213,11 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
   1. **Registry login/logout** — `ContainerManager.registryLogin(server:username:password:)` runs `container registry login --username <u> --password-stdin <server>`, writing the password to the process STDIN then closing (EOF). The password is NEVER in argv and never logged/stored; `registryLogout(server:)` added too. Verified honestly: login to an unreachable server returns the real error ("Connection refused"), success is not fabricated, and the password is absent from the captured output.
   2. **GUI** — Images view header gains a "Registry Login" button opening a sheet (server, username, SecureField password, Log In / Log Out), wired through GUIStateManager with honest success/failure alerts. This completes the push workflow.
   3. **Unit test** — added `testListContainerDirectoryParsesLsOutput` (fake engine returns canned `ls -la`; asserts "." dropped, ".." kept + sorts first, dir vs file flags, byte humanisation). Mirrors the existing FakeContainerEngine pattern (runs in CI/Xcode; local toolchain lacks XCTest).
-- **Backlog (next iterations):** per-container actions polish (kill vs stop, copy id); container "create from image" already done; consider next major-milestone DMG release (v0.3.0) once a few more features land.
+- **Released v0.3.0** (DMG, branded icon) = full image registry workflow (build/tag/push/login/run-from-image) + live list stats. Releases v0.1.0–v0.3.0 published.
+- **Iteration P15 (robustness + per-container actions):**
+  1. **Honest create failures** — `runNewContainer` used `engine.run` (stderr swallowed, exit ignored) so bad image / duplicate name / bad port FAILED SILENTLY. Switched it to `runCapturing` (combined output + exit) and it now THROWS the real error; the GUI's existing catch surfaces it. Verified end-to-end: bad image and duplicate name throw the real runtime errors; valid create still works.
+  2. **Force Kill + Copy ID** — added `ContainerManager.killContainer` (`container kill`, SIGKILL) distinct from graceful stop; the GUI detail header gains a red "Force Kill" (running only) and a "Copy ID" button. Verified killContainer actually kills a running container.
+- **Backlog (next iterations):** more APCCore unit tests; "copy run command" affordance; broader QA; review volume/USB flows for the same silent-failure pattern.
 
 ## Reflection Checkpoint (Loop 20/100)
 
