@@ -200,7 +200,11 @@ Goal restated by user: full OrbStack-parity container manager on Apple's `contai
 - **Iteration P10:**
   1. **Final honesty sweep = CLEAN** — a parallel Explore agent swept the entire GUI for remaining fabricated/hardcoded/no-op data and found ZERO material issues. All UI data now flows from real managers (ContainerManager/VMManager/USBManager/NetworkStatus). The "zero mocking" mandate is satisfied across the GUI surface.
   2. **Live stats in the container LIST** — added a centralized 3s sampler in GUIStateManager (`liveStatsById`, real cgroup samples for all running containers via ContainerManager.liveStats). The list rows now show real live CPU%/memory (falling back to allocated). Refactored the detail view to read from the same central store and removed its duplicate per-selection `.task` sampler (eliminates double-sampling interference on CPU% deltas). Verified: 2 containers sampled concurrently with real distinct live memory (42.1 / 66.6 MB) + real CPU deltas.
-- **Backlog (next iterations):** image build (`container build -t -f`) UI; per-container actions polish; consider next branded DMG release after the image-build feature lands (accumulate a few feature iterations first).
+- **Iteration P11 (image build):**
+  1. **Real image build** — probed `container build`: needs an explicit `-f` (resolved vs CWD, not context dir), and output is BUFFERED not streamed in piped mode (full log at completion, like image pull). Added `ContainerManager.buildImage(tag:dockerfilePath:contextDir:)` that runs real `container build -t <tag> -f <abs Dockerfile> <context>`, drains the pipe to EOF then reaps exit status, returning (success, full log). Verified: real build succeeds, log contains "Successfully built", image appears in `image list`; failure path returns the real error.
+  2. **GUI "Build Image" card** in the Images view — tag field, NSOpenPanel context-folder picker, optional Dockerfile path, async build off-thread with a spinner, then shows the real build log (scrollable) + success/failure alert + refreshes images. No fabricated progress.
+- **Release v0.2.0:** cut after image-build (major capability) — rebuilt branded DMG, published to GitHub Releases.
+- **Backlog (next iterations):** per-container actions polish; image push/tag; container create from a built image; broader QA.
 
 ## Reflection Checkpoint (Loop 20/100)
 

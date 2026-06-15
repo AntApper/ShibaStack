@@ -221,7 +221,34 @@ public final class ContainerManager: @unchecked Sendable {
         // Run pull synchronously or in background
         _ = engine.run(["image", "pull", imageRef])
     }
-    
+
+    /// Build an image from a Dockerfile via real `container build`. Blocking — call
+    /// off the main thread. Returns whether the build exited cleanly plus the full
+    /// combined build log (the CLI buffers output and writes it at completion).
+    public func buildImage(tag: String, dockerfilePath: String?, contextDir: String) -> (success: Bool, log: String) {
+        // `container build` resolves -f relative to CWD, so always pass an absolute Dockerfile path.
+        let dockerfile = (dockerfilePath?.isEmpty == false) ? dockerfilePath! : "\(contextDir)/Dockerfile"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/container")
+        process.arguments = ["build", "-t", tag, "-f", dockerfile, contextDir]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            // Drain to EOF first (avoids a pipe-buffer deadlock), then reap the exit status.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let log = String(data: data, encoding: .utf8) ?? ""
+            return (process.terminationStatus == 0, log)
+        } catch {
+            return (false, "Failed to launch container build: \(error.localizedDescription)")
+        }
+    }
+
     public func removeImage(id: String) {
         _ = engine.run(["image", "rm", id])
     }

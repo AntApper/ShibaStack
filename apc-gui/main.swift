@@ -209,6 +209,8 @@ class GUIStateManager: ObservableObject {
     @Published var downloadingKernels: Bool = false
     @Published var installingAppleContainer: Bool = false
     @Published var isPullingImage: Bool = false
+    @Published var isBuildingImage: Bool = false
+    @Published var lastBuildLog: String = ""
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
     @Published var selectedContainerIDs = Set<String>() {
@@ -445,7 +447,28 @@ class GUIStateManager: ObservableObject {
             }
         }
     }
-    
+
+    func buildImage(tag: String, dockerfile: String, context: String) {
+        self.isBuildingImage = true
+        self.lastBuildLog = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.buildImage(
+                tag: tag,
+                dockerfilePath: dockerfile.isEmpty ? nil : dockerfile,
+                contextDir: context
+            )
+            DispatchQueue.main.async {
+                self.isBuildingImage = false
+                self.lastBuildLog = result.log
+                self.alertMessage = result.success
+                    ? "Image '\(tag)' built successfully."
+                    : "Build failed — see the build log for details."
+                self.showingAlert = true
+                self.refreshAll()
+            }
+        }
+    }
+
     func removeImage(_ id: String) {
         ContainerManager.shared.removeImage(id: id)
         refreshAll()
@@ -1775,7 +1798,22 @@ struct ImagesDashboardView: View {
     @EnvironmentObject var state: GUIStateManager
     @State private var pullRepo = ""
     @State private var pullTag = "latest"
-    
+    @State private var buildTag = ""
+    @State private var buildContext = ""
+    @State private var buildDockerfile = ""
+
+    private func chooseContextFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose the build context folder (contains your Dockerfile)"
+        if panel.runModal() == .OK, let url = panel.url {
+            buildContext = url.path
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -1820,7 +1858,62 @@ struct ImagesDashboardView: View {
                 .padding()
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(10)
-                
+
+                // Build Image from a Dockerfile (real `container build`)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Build Image")
+                        .font(.headline)
+
+                    HStack {
+                        TextField("Tag (e.g. myapp:latest)", text: $buildTag)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(state.isBuildingImage)
+
+                        Button(action: chooseContextFolder) {
+                            Label(buildContext.isEmpty ? "Choose Context…" : (buildContext as NSString).lastPathComponent,
+                                  systemImage: "folder")
+                        }
+                        .disabled(state.isBuildingImage)
+
+                        Button(action: { state.buildImage(tag: buildTag, dockerfile: buildDockerfile, context: buildContext) }) {
+                            Text(state.isBuildingImage ? "Building" : "Build")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.isBuildingImage || buildTag.isEmpty || buildContext.isEmpty)
+                    }
+
+                    TextField("Dockerfile path (optional — defaults to <context>/Dockerfile)", text: $buildDockerfile)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .disabled(state.isBuildingImage)
+
+                    if state.isBuildingImage {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Building image via container build…")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if !state.lastBuildLog.isEmpty {
+                        ScrollView {
+                            Text(state.lastBuildLog)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.shibaCream)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(8)
+                        }
+                        .frame(maxHeight: 160)
+                        .background(Color.shibaCharcoal)
+                        .cornerRadius(6)
+                    }
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+
                 // Card list of local images
                 VStack(spacing: 8) {
                     ForEach(state.images) { img in
