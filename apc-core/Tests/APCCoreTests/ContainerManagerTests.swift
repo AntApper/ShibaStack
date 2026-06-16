@@ -110,6 +110,89 @@ final class ContainerManagerTests: XCTestCase {
         XCTAssertEqual(byRepo["corentinth/it-tools"]?.tag, "latest")   // docker.io/ stripped, user/repo kept
         XCTAssertEqual(byRepo["ghcr.io/owner/app"]?.tag, "1.0")        // non-docker.io host preserved
     }
+
+    func testGetImagesSizeUnderOneMBShowsKBNotNA() {
+        let imageJSON = """
+        [ { "reference": "small:latest", "descriptor": { "size": 512000 } },
+          { "reference": "empty:latest", "descriptor": { "size": 0 } } ]
+        """
+        let manager = makeManager(responses: ["image": imageJSON])
+        let byRepo = Dictionary(uniqueKeysWithValues: manager.getImages().map { ($0.repository, $0) })
+
+        XCTAssertEqual(byRepo["small"]?.size, "500.0 KB")   // sub-MB humanised, not "N/A"
+        XCTAssertEqual(byRepo["empty"]?.size, "N/A")        // only a non-positive size is unknown
+    }
+
+    func testSplitImageReferenceHandlesRegistryPortAndDigest() {
+        // Plain docker.io cases stay exactly as before.
+        XCTAssertEqual(ContainerManager.splitImageReference("docker.io/library/nginx:latest").repository, "nginx")
+        XCTAssertEqual(ContainerManager.splitImageReference("docker.io/library/nginx:latest").tag, "latest")
+
+        // A registry host:port must not be mistaken for a repo:tag.
+        let port = ContainerManager.splitImageReference("localhost:5000/myapp:1.0")
+        XCTAssertEqual(port.repository, "localhost:5000/myapp")
+        XCTAssertEqual(port.tag, "1.0")
+
+        // No tag defaults to "latest"; non-docker host preserved.
+        let noTag = ContainerManager.splitImageReference("ghcr.io/owner/app")
+        XCTAssertEqual(noTag.repository, "ghcr.io/owner/app")
+        XCTAssertEqual(noTag.tag, "latest")
+
+        // Digest reference keeps the repository; the digest is shown as a short tag.
+        let digest = ContainerManager.splitImageReference("docker.io/library/redis@sha256:abcdef0123456789")
+        XCTAssertEqual(digest.repository, "redis")
+        XCTAssertTrue(digest.tag.hasPrefix("@"))
+    }
+
+    func testGetContainersDoesNotWriteRoutingOnItsOwn() {
+        let listJSON = """
+        [ { "configuration": { "id": "web", "image": { "reference": "nginx:latest" },
+            "publishedPorts": [ { "hostPort": 8081, "containerPort": 80 } ] }, "status": "running" } ]
+        """
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apc-tests-\(UUID().uuidString)")
+        let manager = ContainerManager(engine: FakeContainerEngine(responses: ["list": listJSON]),
+                                       stateDirectory: tmp)
+        let routingURL = tmp.appendingPathComponent("routing.json")
+        // init() syncs routing once; remove it and prove a pure read doesn't recreate it.
+        try? FileManager.default.removeItem(at: routingURL)
+        _ = manager.getContainers()
+        _ = manager.getContainers()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: routingURL.path),
+                       "getContainers() must be a pure read and not write routing.json")
+    }
+
+    func testGetContainersReturnsEmptyLogsAndFetchesOnDemand() {
+        let listJSON = """
+        [ { "configuration": { "id": "web", "image": { "reference": "nginx:latest" } }, "status": "running" } ]
+        """
+        let manager = makeManager(responses: ["list": listJSON, "logs": "line-1\nline-2\n"])
+
+        // The list path no longer carries logs (no per-container fan-out)...
+        XCTAssertEqual(manager.getContainers().first?.logs, [])
+        // ...they are fetched on demand instead.
+        XCTAssertEqual(manager.getContainerLogs(id: "web"), ["line-1", "line-2"])
+    }
+
+    func testReconcileRoutingRecoversAnOutOfBandDeletedFile() {
+        let listJSON = """
+        [ { "configuration": { "id": "web", "image": { "reference": "nginx:latest" },
+            "publishedPorts": [ { "hostPort": 8081, "containerPort": 80 } ] }, "status": "running" } ]
+        """
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apc-tests-\(UUID().uuidString)")
+        let manager = ContainerManager(engine: FakeContainerEngine(responses: ["list": listJSON]),
+                                       stateDirectory: tmp)
+        let routingURL = tmp.appendingPathComponent("routing.json")
+
+        // init() already wrote it; delete it out-of-band and confirm reconcile rewrites it
+        // even though the route set is unchanged (the dedup must not mask a missing file).
+        try? FileManager.default.removeItem(at: routingURL)
+        manager.reconcileRouting()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: routingURL.path))
+        let json = (try? String(contentsOf: routingURL, encoding: .utf8)) ?? ""
+        XCTAssertTrue(json.contains("web.apc.local") && json.contains("8081"))
+    }
 }
 
 /// The host/guest wire contract — one typed codec, exercised without a socket.

@@ -13,6 +13,55 @@ extension Color {
     static let shibaGold = Color(red: 234/255, green: 168/255, blue: 58/255)
 }
 
+// MARK: - Design Tokens & Reusable Surfaces
+// One place for the corner radii and the card/badge recipes that were previously
+// copy-pasted (with drifting 8/10/12 radii) at ~26 sites.
+enum ShibaRadius {
+    static let card: CGFloat = 10
+    static let badge: CGFloat = 4
+    static let inset: CGFloat = 6
+}
+
+extension View {
+    /// Standard inset card surface (control background + rounded corners).
+    func shibaCard(padding: CGFloat = 16, radius: CGFloat = ShibaRadius.card) -> some View {
+        self.padding(padding)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(radius)
+    }
+
+    /// Card surface with a hairline border (used for emphasized/maintenance cards).
+    func shibaCardBordered(padding: CGFloat = 16, radius: CGFloat = ShibaRadius.card) -> some View {
+        self.shibaCard(padding: padding, radius: radius)
+            .overlay(RoundedRectangle(cornerRadius: radius).stroke(Color(NSColor.gridColor), lineWidth: 1))
+    }
+
+    /// Pill/badge styling: tinted fill + colored text.
+    func shibaBadge(_ tint: Color) -> some View {
+        self.font(.caption2)
+            .fontWeight(.bold)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.15))
+            .foregroundColor(tint)
+            .cornerRadius(ShibaRadius.badge)
+    }
+}
+
+/// A status indicator dot that also exposes its state to VoiceOver (color alone
+/// is not an accessible signal).
+struct StatusDot: View {
+    let color: Color
+    var size: CGFloat = 8
+    let label: String
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .accessibilityLabel(label)
+    }
+}
+
 // MARK: - Programmatic Shiba Mascot Vector Icon (Premium Brand Compliance)
 struct ShibaIconView: View {
     var body: some View {
@@ -188,7 +237,11 @@ class GUIStateManager: ObservableObject {
 
     // Live per-container stats (real cgroup samples), keyed by container id.
     @Published var liveStatsById: [String: LiveContainerStats] = [:]
+    // False until the first fast refresh completes, so views can show "Loading…"
+    // instead of an empty state that's indistinguishable from genuinely empty.
+    @Published var hasLoadedOnce: Bool = false
     private var statsTimer: Timer?
+    private var slowTimer: Timer?
 
     // Hardware configuration allocations
     @Published var allocatedCPUs: Int = 2
@@ -213,6 +266,7 @@ class GUIStateManager: ObservableObject {
     @Published var isBuildingImage: Bool = false
     @Published var isPushingImage: Bool = false
     @Published var isAuthenticating: Bool = false
+    @Published var restartingIDs: Set<String> = []   // containers with a restart in flight
     @Published var lastBuildLog: String = ""
     
     @Published var selectedSidebarItem: SidebarItem? = .overview
@@ -226,7 +280,13 @@ class GUIStateManager: ObservableObject {
         }
     }
     @Published var selectedContainerID: String?
-    
+
+    // Refresh coordination (all read/written on the main thread only — no locking needed).
+    private var isRefreshing = false      // a fast refresh is in flight
+    private var isRefreshingIV = false    // an image/volume refresh is in flight
+    private var refreshGeneration = 0     // latest-wins: stale fast snapshots are discarded
+    private var ivGeneration = 0          // latest-wins for image/volume refreshes
+
     var selectedContainer: Container? {
         guard let id = selectedContainerID else { return nil }
         return containers.first(where: { $0.id == id })
@@ -245,31 +305,46 @@ class GUIStateManager: ObservableObject {
         self.enableRosetta = savedConfig.enableRosetta
         
         refreshAll()
+        refreshImagesAndVolumes()
         checkDependencies() // Check dependencies once on startup
         startPeriodicRefresh()
     }
-    
-    func refreshAll() {
+
+    /// Fast refresh: VM state, engine liveness, containers, live stats, USB.
+    /// `coalesce` (used by the timer) skips a tick while a prior fast refresh is still
+    /// in flight; action-triggered refreshes pass false so the UI reflects changes at once.
+    /// A generation counter discards any snapshot superseded by a newer refresh — this
+    /// kills the stale-stomp races (delete/reselect, a freshly-created container vanishing).
+    func refreshAll(coalesce: Bool = false) {
+        if coalesce && isRefreshing { return }
+        isRefreshing = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            
+
             let state = VMManager.shared.getVMState()
             let runtime = ContainerManager.shared.isRuntimeRunning()
             let conts = ContainerManager.shared.getContainers()
-            let imgs = ContainerManager.shared.getImages()
-            let vols = ContainerManager.shared.getVolumes()
             let usb = USBManager.shared.scanDevices()
-            let stats = ContainerManager.shared.getStats()
+            let stats = ContainerManager.shared.getStats(containers: conts)
+            // Reconcile routing from the freshly read list (prunes routes for containers
+            // that exited/crashed out-of-band); dedup keeps it write-free when unchanged.
+            ContainerManager.shared.reconcileRouting(using: conts)
 
             DispatchQueue.main.async {
+                self.isRefreshing = false
+                // Latest-wins: a newer refresh has already (or will) publish fresher state.
+                guard generation == self.refreshGeneration else { return }
+
                 self.vmState = state
                 self.runtimeRunning = runtime
-                self.containers = conts
-                self.images = imgs
-                self.volumes = vols
+                if self.containers != conts { self.containers = conts }
                 self.usbDevices = usb
                 self.hardwareStats = stats
-                
+                self.hasLoadedOnce = true
+
                 // Auto-select first container if none selected
                 if self.selectedContainerID == nil, let first = conts.first {
                     self.selectedContainerID = first.id
@@ -288,18 +363,53 @@ class GUIStateManager: ObservableObject {
             }
         }
     }
-    
-    private func startPeriodicRefresh() {
-        // Keep stats and containers dynamically updated every 1.5 seconds
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+
+    /// Images and volumes change only on explicit user actions (pull/build/create/delete)
+    /// or out-of-band CLI use, so they refresh on a slow cadence + after mutations — not
+    /// on the 1.5s container hot path.
+    func refreshImagesAndVolumes(coalesce: Bool = false) {
+        // `coalesce` (the slow timer) skips while a refresh is in flight; mutation- and
+        // appear-triggered refreshes pass false so a fresh result is never dropped. A
+        // generation counter discards any snapshot superseded by a newer refresh.
+        if coalesce && isRefreshingIV { return }
+        isRefreshingIV = true
+        ivGeneration += 1
+        let generation = ivGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let imgs = ContainerManager.shared.getImages()
+            let vols = ContainerManager.shared.getVolumes()
             DispatchQueue.main.async {
-                self?.refreshAll()
+                self.isRefreshingIV = false
+                guard generation == self.ivGeneration else { return }
+                if self.images != imgs { self.images = imgs }
+                if self.volumes != vols { self.volumes = vols }
             }
         }
+    }
+
+    private func startPeriodicRefresh() {
+        // Timers run in .common run-loop mode so they keep firing during menus, modal
+        // panels (e.g. NSOpenPanel) and live window resizing. Heavy work is dispatched
+        // off the main thread inside each closure, so firing during resize is cheap.
+        let fast = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.refreshAll(coalesce: true)
+        }
+        RunLoop.main.add(fast, forMode: .common)
+        timer = fast
+
+        let slow = Timer(timeInterval: 6.0, repeats: true) { [weak self] _ in
+            self?.refreshImagesAndVolumes(coalesce: true)
+        }
+        RunLoop.main.add(slow, forMode: .common)
+        slowTimer = slow
+
         // Sample live per-container cgroup stats on a steady 3s cadence (clean CPU% deltas).
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        let live = Timer(timeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.sampleLiveStats()
         }
+        RunLoop.main.add(live, forMode: .common)
+        statsTimer = live
     }
 
     private func sampleLiveStats() {
@@ -379,6 +489,31 @@ class GUIStateManager: ObservableObject {
         }
     }
 
+    /// Restart = stop, then start, sequenced on one background queue. The core calls
+    /// block until the CLI exits, so `start` can't race an unfinished `stop` (the old
+    /// fixed 1s `asyncAfter` did). `restartingIDs` gates the button while in flight.
+    func restartContainer(_ id: String) {
+        guard !restartingIDs.contains(id) else { return }
+        restartingIDs.insert(id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failure: String?
+            do {
+                try ContainerManager.shared.stopContainer(id: id)
+                try ContainerManager.shared.startContainer(id: id)
+            } catch {
+                failure = error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                self.restartingIDs.remove(id)
+                if let failure {
+                    self.alertMessage = "Restart failed: \(failure)"
+                    self.showingAlert = true
+                }
+                self.refreshAll()
+            }
+        }
+    }
+
     func createContainer(name: String, image: String, ports: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -391,6 +526,7 @@ class GUIStateManager: ObservableObject {
             }
             DispatchQueue.main.async {
                 self.refreshAll()
+                self.refreshImagesAndVolumes()   // `run` may have auto-pulled a new image
             }
         }
     }
@@ -467,7 +603,7 @@ class GUIStateManager: ObservableObject {
                     self.alertMessage = "Pull failed: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown error" : result.output)"
                     self.showingAlert = true
                 }
-                self.refreshAll()
+                self.refreshImagesAndVolumes()
             }
         }
     }
@@ -484,11 +620,18 @@ class GUIStateManager: ObservableObject {
             DispatchQueue.main.async {
                 self.isBuildingImage = false
                 self.lastBuildLog = result.log
-                self.alertMessage = result.success
-                    ? "Image '\(tag)' built successfully."
-                    : "Build failed — see the build log for details."
+                if result.success {
+                    self.alertMessage = "Image '\(tag)' built successfully."
+                } else {
+                    // Carry the real failure detail in the alert so it's actionable on any tab,
+                    // not just on Images where the full scrollable log lives.
+                    let tail = result.log.trimmingCharacters(in: .whitespacesAndNewlines).suffix(600)
+                    self.alertMessage = tail.isEmpty
+                        ? "Build failed (no output). Check the Dockerfile path and build context."
+                        : "Build failed:\n…\(tail)"
+                }
                 self.showingAlert = true
-                self.refreshAll()
+                self.refreshImagesAndVolumes()
             }
         }
     }
@@ -501,7 +644,7 @@ class GUIStateManager: ObservableObject {
                     ? "Tagged \(source) → \(target)."
                     : "Tag failed: \(result.output.isEmpty ? "unknown error" : result.output)"
                 self.showingAlert = true
-                self.refreshAll()
+                self.refreshImagesAndVolumes()
             }
         }
     }
@@ -550,13 +693,22 @@ class GUIStateManager: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             do { try ContainerManager.shared.removeImage(id: id) }
             catch { DispatchQueue.main.async { self.alertMessage = error.localizedDescription; self.showingAlert = true } }
-            DispatchQueue.main.async { self.refreshAll() }
+            DispatchQueue.main.async { self.refreshImagesAndVolumes() }
         }
     }
-    
+
     func pruneStorage() {
-        ContainerManager.shared.pruneStorage()
-        refreshAll()
+        // `container image prune` can take a while — keep it off the main thread (unbounded).
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ContainerManager.shared.pruneStorage()
+            DispatchQueue.main.async {
+                if !result.success {
+                    self.alertMessage = "Prune failed: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "unknown error" : result.output)"
+                    self.showingAlert = true
+                }
+                self.refreshImagesAndVolumes()
+            }
+        }
     }
 
     // Persist allocation settings immediately so slider/toggle changes stick (applied on next VM start).
@@ -896,8 +1048,21 @@ class GUIStateManager: ObservableObject {
             }
         }
         
+        md += "\n---\n\n## 7. Network & Local DNS Routing\n"
+        md += "- **DNS Resolver Rule (/etc/resolver/apc.local):** \(resolverConfigured ? "Configured" : "Missing")\n"
+        md += "- **DNS Server (udp/15353) responding:** \(NetworkStatus.isDNSResponding(port: 15353) ? "Yes" : "No")\n"
+        let proxyUp = NetworkStatus.isTCPListening(port: 8080) || NetworkStatus.isTCPListening(port: 80)
+        md += "- **Reverse Proxy (tcp/8080 or 80) listening:** \(proxyUp ? "Yes" : "No")\n"
+        let routingURL = home.appendingPathComponent(".apc/routing.json")
+        if let routing = try? String(contentsOf: routingURL, encoding: .utf8),
+           !routing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            md += "\n**Active route mappings (`~/.apc/routing.json`):**\n\n```json\n\(routing)\n```\n"
+        } else {
+            md += "\n*No active route mappings.*\n"
+        }
+
         md += "\n\n--- End of Report ---\n"
-        
+
         do {
             try md.write(to: reportURL, atomically: true, encoding: .utf8)
             self.alertMessage = "Diagnostics Report successfully saved to Desktop as 'shibastack-diagnostics.md'."
@@ -919,6 +1084,7 @@ class GUIStateManager: ObservableObject {
     
     deinit {
         timer?.invalidate()
+        slowTimer?.invalidate()
         statsTimer?.invalidate()
     }
 }
@@ -972,10 +1138,10 @@ struct MainDashboardView: View {
                 VStack(spacing: 8) {
                     Divider()
                     HStack {
-                        Circle()
-                            .fill(state.vmState == "running" ? Color.green : Color.red)
-                            .frame(width: 10, height: 10)
-                        
+                        StatusDot(color: state.vmState == "running" ? .green : .red,
+                                  size: 10,
+                                  label: "VM \(state.vmState)")
+
                         Text("ShibaStack: \(state.vmState.uppercased())")
                             .font(.caption)
                             .fontWeight(.medium)
@@ -994,36 +1160,42 @@ struct MainDashboardView: View {
                 }
             }
         } detail: {
-            // Detail Panels based on selection
-            if let selection = state.selectedSidebarItem {
-                switch selection {
-                case .overview:
-                    GetStartedView()
-                case .containers:
-                    ContainersDashboardView()
-                case .images:
-                    ImagesDashboardView()
-                case .storage:
-                    VolumesDashboardView()
-                case .network:
-                    NetworkDashboardView()
-                case .usb:
-                    USBDashboardView()
-                case .settings:
-                    SettingsDashboardView()
+            VStack(spacing: 0) {
+                // Honest engine status on every tab, not just Containers — otherwise other
+                // tabs show empty lists / zero counts indistinguishable from "engine down".
+                EngineOffBanner()
+
+                // Detail Panels based on selection
+                if let selection = state.selectedSidebarItem {
+                    switch selection {
+                    case .overview:
+                        GetStartedView()
+                    case .containers:
+                        ContainersDashboardView()
+                    case .images:
+                        ImagesDashboardView()
+                    case .storage:
+                        VolumesDashboardView()
+                    case .network:
+                        NetworkDashboardView()
+                    case .usb:
+                        USBDashboardView()
+                    case .settings:
+                        SettingsDashboardView()
+                    }
+                } else {
+                    Text("Select an item from the sidebar")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                Text("Select an item from the sidebar")
-                    .foregroundColor(.secondary)
             }
         }
         // Custom Window Toolbar Actions (Matches OrbStack style top-level controls)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(state.vmState == "running" ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
+                    StatusDot(color: state.vmState == "running" ? .green : .red,
+                              label: "VM \(state.vmState)")
                     Text("ShibaStack VM")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -1074,6 +1246,28 @@ struct MainDashboardView: View {
     }
 }
 
+// MARK: - Engine status banner (shown on every tab when the container engine is down)
+struct EngineOffBanner: View {
+    @EnvironmentObject var state: GUIStateManager
+    var body: some View {
+        if !state.runtimeRunning {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
+                Text("The container engine is not running. Start it with")
+                    .font(.caption)
+                Text("container system start")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.shibaOrange)
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(Color.yellow.opacity(0.1))
+        }
+    }
+}
+
 // MARK: - Sub-tab definitions for Container Details (OrbStack 1-to-1 matching)
 enum ContainerTab: String, CaseIterable {
     case logs = "Logs"
@@ -1101,6 +1295,8 @@ struct ContainersDashboardView: View {
     // Live per-container resource sample (real, from cgroup via the runtime)
     // Live-streamed log lines (real `container logs -f`) for the running container
     @State private var streamedLogs: [String] = []
+    // One-shot logs for a stopped container (fetched on demand; running uses the stream above)
+    @State private var stoppedLogs: [String] = []
 
     // Container filesystem explorer states
     @State private var currentPath = "/"
@@ -1122,27 +1318,11 @@ struct ContainersDashboardView: View {
                 }
                 .padding()
 
-                if !state.runtimeRunning {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
-                        Text("The container engine is not running. Start it with")
-                            .font(.caption)
-                        Text("container system start")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.shibaOrange)
-                            .textSelection(.enabled)
-                        Spacer()
-                    }
-                    .padding(8)
-                    .background(Color.yellow.opacity(0.1))
-                }
-
                 List(state.containers, selection: $state.selectedContainerIDs) { cont in
                     HStack(spacing: 12) {
-                        Circle()
-                            .fill(cont.state == "running" ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                        
+                        StatusDot(color: cont.state == "running" ? .green : .red,
+                                  label: cont.state == "running" ? "Running" : "Stopped")
+
                         VStack(alignment: .leading, spacing: 4) {
                             Text(cont.name)
                                 .font(.headline)
@@ -1241,15 +1421,12 @@ struct ContainersDashboardView: View {
                                     }
                                     .buttonStyle(.bordered)
                                     
-                                    Button(action: {
-                                        state.stopContainer(selected.id)
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                            state.startContainer(selected.id)
-                                        }
-                                    }) {
-                                        Label("Restart", systemImage: "arrow.clockwise")
+                                    Button(action: { state.restartContainer(selected.id) }) {
+                                        Label(state.restartingIDs.contains(selected.id) ? "Restarting…" : "Restart",
+                                              systemImage: "arrow.clockwise")
                                     }
                                     .buttonStyle(.bordered)
+                                    .disabled(state.restartingIDs.contains(selected.id))
 
                                     Button(action: { state.killContainer(selected.id) }) {
                                         Label("Force Kill", systemImage: "bolt.fill")
@@ -1277,7 +1454,7 @@ struct ContainersDashboardView: View {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
                                 .menuStyle(.borderlessButton)
-                                .frame(width: 64)
+                                .fixedSize()
                                 .help("Copy the container ID or its run command")
 
                                 Button(role: .destructive, action: { state.deleteContainer(id: selected.id) }) {
@@ -1371,10 +1548,21 @@ struct ContainersDashboardView: View {
                             }
                             .background(Color.shibaCharcoal)
                         }
-                        .task(id: selected.id) {
-                            // Stream real `container logs -f` while this running container's Logs tab is open.
+                        .task(id: "\(selected.id)-\(selected.state)") {
+                            // Re-keyed on state so a start/stop transition restarts this task:
+                            // stream `container logs -f` while running, else fetch logs once.
                             streamedLogs = []
-                            guard selected.state == "running" else { return }
+                            stoppedLogs = []
+                            guard selected.state == "running" else {
+                                let id = selected.id
+                                let lines = await Task.detached(priority: .userInitiated) {
+                                    ContainerManager.shared.getContainerLogs(id: id)
+                                }.value
+                                // Don't let a late result for a since-deselected container stomp the current one.
+                                guard !Task.isCancelled, state.selectedContainerID == id else { return }
+                                stoppedLogs = lines
+                                return
+                            }
                             let streamer = LogStreamer()
                             await withTaskCancellationHandler {
                                 streamer.start(containerId: selected.id, tail: 200) { line in
@@ -1419,16 +1607,22 @@ struct ContainersDashboardView: View {
                             
                             // Input field - only enabled when container is running
                             if selected.state == "running" {
-                                HStack {
-                                    Text("shiba-guest:~$")
-                                        .font(.system(.caption, design: .monospaced))
-                                        .foregroundColor(.shibaOrange)
-                                    
-                                    TextField("", text: $terminalInput, onCommit: executeTerminalCommand)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .textFieldStyle(.plain)
-                                        .foregroundColor(.white)
-                                        .onSubmit(executeTerminalCommand)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("shiba-guest:~$")
+                                            .font(.system(.caption, design: .monospaced))
+                                            .foregroundColor(.shibaOrange)
+
+                                        TextField("", text: $terminalInput, onCommit: executeTerminalCommand)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .textFieldStyle(.plain)
+                                            .foregroundColor(.white)
+                                            .onSubmit(executeTerminalCommand)
+                                    }
+                                    // Honest: each line is an independent `container exec sh -c`.
+                                    Text("Each command runs in a fresh shell — cd, export, and variables don't persist between lines.")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.secondary)
                                 }
                                 .padding(8)
                                 .background(Color.black.opacity(0.4))
@@ -1446,7 +1640,18 @@ struct ContainersDashboardView: View {
                             }
                         }
                         .background(Color.shibaCharcoal)
-                        
+                        .onAppear {
+                            // Re-entering the Terminal tab (incl. after a switch made on another
+                            // tab) starts from a fresh prompt — consistent with the no-persistence model.
+                            terminalLogs = ["shiba-guest:~$ "]
+                            terminalInput = ""
+                        }
+                        .onChange(of: selected.id) {
+                            // Don't carry the previous container's scrollback into this one.
+                            terminalLogs = ["shiba-guest:~$ "]
+                            terminalInput = ""
+                        }
+
                     case .files:
                         // Real container rootfs browser via `container exec ls -la`
                         VStack(alignment: .leading, spacing: 0) {
@@ -1670,9 +1875,9 @@ struct ContainersDashboardView: View {
         return parts.joined(separator: " ")
     }
 
-    // Live streamed logs while running; otherwise the one-shot logs from the last refresh.
+    // Live streamed logs while running; otherwise the one-shot logs fetched on demand.
     private func displayLogs(for cont: Container) -> [String] {
-        cont.state == "running" ? streamedLogs : cont.logs
+        cont.state == "running" ? streamedLogs : stoppedLogs
     }
 
     // Format a live memory figure (bytes) for compact display.
@@ -1792,7 +1997,7 @@ struct CreateContainerSheet: View {
                                 .font(.caption2)
                                 .foregroundColor(.red)
                         } else {
-                            Text("Must be alphanumeric characters, dashes, or underscores.")
+                            Text("Must start with a letter or digit, then alphanumeric, dashes, or underscores.")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -1914,7 +2119,13 @@ struct CreateContainerSheet: View {
             nameError = "Container name cannot be empty."
             return
         }
-        
+
+        // The runtime rejects names not starting with a letter/digit (".", "..", "-foo", "_x").
+        guard let first = value.unicodeScalars.first, CharacterSet.alphanumerics.contains(first) else {
+            nameError = "Name must start with a letter or digit."
+            return
+        }
+
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
         if value.unicodeScalars.first(where: { !allowed.contains($0) }) != nil {
             nameError = "Invalid characters. Use alphanumeric, dashes, and underscores only."
@@ -2142,6 +2353,7 @@ struct ImagesDashboardView: View {
         }
         .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
+        .onAppear { state.refreshImagesAndVolumes() }
         .overlay(alignment: .top) {
             if state.isPushingImage {
                 HStack(spacing: 8) {
@@ -2228,8 +2440,11 @@ struct VolumesDashboardView: View {
     @State private var volumeBytes: Int64 = 0
 
     private func loadVolumeBytes() {
+        // Reuse the already-listed volumes (avoids a redundant `volume list` subprocess);
+        // fall back to a fresh list if the cache hasn't populated yet.
+        let snapshot = state.volumes
         DispatchQueue.global(qos: .utility).async {
-            let bytes = ContainerManager.shared.volumeStorageBytes()
+            let bytes = ContainerManager.shared.volumeStorageBytes(snapshot.isEmpty ? nil : snapshot)
             DispatchQueue.main.async { volumeBytes = bytes }
         }
     }
@@ -2324,6 +2539,7 @@ struct VolumesDashboardView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help("Remove Volume")
+                                .accessibilityLabel("Delete volume \(vol.name)")
                             }
                         }
                         .padding()
@@ -2354,13 +2570,7 @@ struct VolumesDashboardView: View {
                         Spacer()
                         
                         Text("VirtioFS (High Performance)")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.shibaOrange.opacity(0.15))
-                            .foregroundColor(.shibaOrange)
-                            .cornerRadius(4)
+                            .shibaBadge(.shibaOrange)
                     }
                     .padding()
                     .background(Color(NSColor.controlBackgroundColor))
@@ -2410,13 +2620,14 @@ struct VolumesDashboardView: View {
         }
         .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
+        .onAppear { state.refreshImagesAndVolumes() }
     }
-    
+
     func createVolume() {
         guard !newVolumeName.isEmpty && !newVolumeMountPoint.isEmpty else { return }
         do {
             try ContainerManager.shared.createVolume(name: newVolumeName, mountPoint: newVolumeMountPoint)
-            state.refreshAll()
+            state.refreshImagesAndVolumes()
             newVolumeName = ""
             newVolumeMountPoint = ""
             showingCreateVolumeSheet = false
@@ -2429,7 +2640,7 @@ struct VolumesDashboardView: View {
     func deleteVolume(_ name: String) {
         do {
             try ContainerManager.shared.removeVolume(id: name)
-            state.refreshAll()
+            state.refreshImagesAndVolumes()
         } catch {
             state.alertMessage = error.localizedDescription
             state.showingAlert = true
@@ -2647,7 +2858,19 @@ struct USBDashboardView: View {
 
                 // Card list of USB devices
                 VStack(spacing: 8) {
-                    if state.usbDevices.isEmpty {
+                    if !state.hasLoadedOnce {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 8) {
+                                ProgressView()
+                                Text("Scanning USB devices…")
+                                    .font(.headline)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 40)
+                    } else if state.usbDevices.isEmpty {
                         HStack {
                             Spacer()
                             VStack(spacing: 8) {
@@ -2786,7 +3009,7 @@ struct SettingsDashboardView: View {
                             Text("Diagnostics Collector")
                                 .font(.subheadline)
                                 .fontWeight(.semibold)
-                            Text("Gathers active environment configuration, OCI runtime details, and network routing logs into a beautiful markdown report on your Desktop.")
+                            Text("Gathers environment, OCI runtime, container/image/volume, USB, and network & DNS routing status into a markdown report on your Desktop.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -2817,13 +3040,7 @@ struct SettingsDashboardView: View {
                         .buttonStyle(.bordered)
                     }
                 }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color(NSColor.gridColor), lineWidth: 1)
-                )
+                .shibaCardBordered()
             }
             .padding()
         }
@@ -2852,10 +3069,9 @@ struct MenuBarView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Circle()
-                            .fill(state.vmState == "running" ? Color.green : (state.vmState == "stopped" ? Color.red : Color.orange))
-                            .frame(width: 8, height: 8)
-                        
+                        StatusDot(color: state.vmState == "running" ? .green : (state.vmState == "stopped" ? .red : .orange),
+                                  label: "VM \(state.vmState)")
+
                         Text("ShibaStack Engine")
                             .font(.headline)
                     }
@@ -2908,6 +3124,7 @@ struct MenuBarView: View {
                                 .foregroundColor(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Dismiss error")
                     }
                     Text(message)
                         .font(.caption2)
@@ -2991,7 +3208,13 @@ struct MenuBarView: View {
                     Spacer()
                 }
                 
-                if state.containers.isEmpty {
+                if !state.hasLoadedOnce {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading…").font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } else if state.containers.isEmpty {
                     Text("No containers available.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -3000,10 +3223,10 @@ struct MenuBarView: View {
                     VStack(spacing: 6) {
                         ForEach(state.containers.prefix(5)) { cont in
                             HStack(spacing: 8) {
-                                Circle()
-                                    .fill(cont.state == "running" ? Color.green : Color.gray)
-                                    .frame(width: 6, height: 6)
-                                
+                                StatusDot(color: cont.state == "running" ? .green : .gray,
+                                          size: 6,
+                                          label: cont.state == "running" ? "Running" : "Stopped")
+
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(cont.name)
                                         .font(.system(size: 12, weight: .semibold))
@@ -3026,6 +3249,7 @@ struct MenuBarView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .help("Open in Browser (port \(hostPort))")
+                                    .accessibilityLabel("Open \(cont.name) in browser, port \(hostPort)")
                                 }
                                 
                                 // Quick Toggle Start/Stop
@@ -3042,6 +3266,7 @@ struct MenuBarView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(cont.state == "running" ? "Stop Container" : "Start Container")
+                                .accessibilityLabel(cont.state == "running" ? "Stop \(cont.name)" : "Start \(cont.name)")
                             }
                             .padding(.vertical, 3)
                             .padding(.horizontal, 6)
@@ -3475,13 +3700,7 @@ struct GetStartedView: View {
                         .buttonStyle(.bordered)
                     }
                 }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color(NSColor.gridColor), lineWidth: 1)
-                )
+                .shibaCardBordered()
                 
                 Spacer()
             }
@@ -3554,12 +3773,6 @@ struct DependencyCardView: View {
             
             Spacer()
         }
-        .padding()
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(NSColor.gridColor), lineWidth: 1)
-        )
+        .shibaCardBordered()
     }
 }

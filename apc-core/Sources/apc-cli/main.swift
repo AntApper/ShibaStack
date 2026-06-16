@@ -248,18 +248,27 @@ Usage:
         let targetId = args[2]
         if let cont = containerManager.getContainers().first(where: { $0.id == targetId || $0.name == targetId }) {
             print("--- Logs for \(cont.name) (\(cont.id)) ---")
-            for logLine in cont.logs {
-                print(logLine)
+            // Logs are fetched on demand (getContainers() is a pure read and no longer carries them).
+            let lines = containerManager.getContainerLogs(id: cont.id)
+            if lines.isEmpty {
+                print("(no logs)")
+            } else {
+                for logLine in lines { print(logLine) }
             }
         } else {
             print("Error: Container '\(targetId)' not found.")
             exit(1)
         }
-        
+
     case "prune":
         print("Reclaiming disk space (removing unreferenced images and snapshots)...")
-        containerManager.pruneStorage()
-        print("Prune completed successfully.")
+        let pruneResult = containerManager.pruneStorage()
+        if pruneResult.success {
+            print("Prune completed successfully.")
+        } else {
+            print("Prune failed: \(pruneResult.output.isEmpty ? "unknown error" : pruneResult.output)")
+            exit(1)
+        }
         
     case "usb":
         guard args.count > 2 else {

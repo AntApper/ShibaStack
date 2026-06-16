@@ -191,6 +191,9 @@ public final class VMManager {
             print("[APC-Core] Gracefully falling back to high-fidelity Mock VM mode...")
             isMockMode = true
             virtualMachine = nil
+            // Actually run the local agent before claiming "running" — otherwise the
+            // status would be a lie (state file says running with nothing behind it).
+            startMockGuestAgentProcess()
             try? "running".write(to: stateFileURL, atomically: true, encoding: .utf8)
             return
         }
@@ -211,6 +214,8 @@ public final class VMManager {
                 print("[APC-Core] Switching to high-fidelity Mock VM mode...")
                 self.isMockMode = true
                 self.virtualMachine = nil
+                // Actually run the local agent before claiming "running" (honest fallback).
+                self.startMockGuestAgentProcess()
                 try? "running".write(to: self.stateFileURL, atomically: true, encoding: .utf8)
             }
         }
@@ -366,8 +371,12 @@ public final class VMManager {
     }
     
     private func startMockGuestAgentProcess() {
+        // Idempotent: tear down any prior agent first so repeated/fallback start paths
+        // can't orphan a previously launched process.
+        stopMockGuestAgentProcess()
+
         let process = Process()
-        
+
         let bundleURL = Bundle.main.bundleURL
         let bundleBinURL = bundleURL.appendingPathComponent("Contents/Resources/bin/guest-vminitd")
         

@@ -10,6 +10,12 @@ public final class ContainerManager: @unchecked Sendable {
     private let statsLock = NSLock()
     private var cpuSamples: [String: (usageUsec: UInt64, at: Date)] = [:]
     private var lastHostCPUTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
+    // Short-TTL cache for the engine liveness probe (guarded by statsLock).
+    private var runtimeStatusCache: (value: Bool, at: Date)?
+
+    // Last routing config written to disk; skip redundant encode+write when unchanged (guarded by routingLock).
+    private let routingLock = NSLock()
+    private var lastWrittenRouting: RoutingConfig?
 
     // Decodable structs for CLI json parsing
     private struct CLIContainerListItem: Codable {
@@ -57,8 +63,8 @@ public final class ContainerManager: @unchecked Sendable {
         try? FileManager.default.createDirectory(at: apcDir, withIntermediateDirectories: true)
         self.routingConfigURL = apcDir.appendingPathComponent("routing.json")
 
-        // Sync routing initially
-        syncRoutingConfig()
+        // Sync routing initially from current real state.
+        syncRoutingConfig(using: getContainers())
     }
 
     // MARK: - Container APIs
@@ -72,6 +78,10 @@ public final class ContainerManager: @unchecked Sendable {
         let decoder = JSONDecoder()
         do {
             let list = try decoder.decode([CLIContainerListItem].self, from: data)
+            // VM core budget is only needed as a fallback when the runtime omits a cpu
+            // count — read it lazily so a normal refresh does no disk I/O (keeps this a pure read).
+            let needsCPUFallback = list.contains { $0.configuration.resources?.cpus == nil }
+            let vmCPUs = needsCPUFallback ? VMManager.shared.loadVMConfig().allocatedCPUs : 0
             let result = list.map { item -> Container in
                 let config = item.configuration
                 let id = config.id
@@ -95,15 +105,10 @@ public final class ContainerManager: @unchecked Sendable {
                     }
                 }
 
-                // Real allocated resources reported by the runtime.
-                let cores = config.resources?.cpus ?? 0
+                // Real allocated resources reported by the runtime; fall back to the VM's
+                // configured core budget so live CPU% isn't normalized against a single core.
+                let cores = config.resources?.cpus ?? vmCPUs
                 let memoryLimitMB = Double(config.resources?.memoryInBytes ?? 0) / (1024.0 * 1024.0)
-
-                // Real container logs — empty if the container has produced none yet.
-                var containerLogs: [String] = []
-                if let logOutput = engine.run(["logs", id]) {
-                    containerLogs = logOutput.components(separatedBy: "\n").filter { !$0.isEmpty }
-                }
 
                 return Container(
                     id: id,
@@ -115,32 +120,38 @@ public final class ContainerManager: @unchecked Sendable {
                     memoryUsage: 0.0,     // live memory sampling not yet wired
                     cpuCores: cores,
                     memoryLimitMB: memoryLimitMB,
-                    logs: containerLogs
+                    logs: []              // fetched on demand via getContainerLogs(id:); see below
                 )
             }
-            
-            // Sync routing config with host whenever containers refresh
-            DispatchQueue.global(qos: .background).async {
-                self.syncRoutingConfig()
-            }
-            
+
+            // `getContainers()` is a pure read — it no longer fetches per-container logs
+            // or triggers a routing sync. Routing is re-synced only on real mutations
+            // (start/stop/run/remove/kill), each passing the freshly fetched list.
             return result
         } catch {
             print("[ContainerManager] JSON decoding failed for containers list: \(error)")
             return []
         }
     }
-    
+
+    /// One-shot fetch of a container's current logs. Used for the Logs view of a
+    /// *stopped* container; running containers stream live via `LogStreamer`, and the
+    /// hot refresh path no longer fetches logs at all. Empty if there are none.
+    public func getContainerLogs(id: String) -> [String] {
+        guard let out = engine.run(["logs", id]) else { return [] }
+        return out.components(separatedBy: "\n").filter { !$0.isEmpty }
+    }
+
     public func startContainer(id: String) throws {
         let result = runCapturing(["start", id])
         guard result.success else { throw Self.cliError(result.output, fallback: "Failed to start container '\(id)'.") }
-        syncRoutingConfig()
+        syncRoutingConfig(using: getContainers())
     }
 
     public func stopContainer(id: String) throws {
         let result = runCapturing(["stop", id])
         guard result.success else { throw Self.cliError(result.output, fallback: "Failed to stop container '\(id)'.") }
-        syncRoutingConfig()
+        syncRoutingConfig(using: getContainers())
     }
 
     /// Build an NSError carrying the real CLI stderr/stdout, or a fallback message.
@@ -167,7 +178,7 @@ public final class ContainerManager: @unchecked Sendable {
             throw NSError(domain: "ContainerManager", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 message.isEmpty ? "Failed to create container '\(name)'." : message])
         }
-        syncRoutingConfig()
+        syncRoutingConfig(using: getContainers())
 
         // Provisional representation; the next refresh replaces it with real runtime data.
         return Container(
@@ -185,14 +196,14 @@ public final class ContainerManager: @unchecked Sendable {
     public func removeContainer(id: String) {
         _ = engine.run(["stop", id])
         _ = engine.run(["rm", id])
-        syncRoutingConfig()
+        syncRoutingConfig(using: getContainers())
     }
 
     /// Force-kill a container (sends SIGKILL), distinct from a graceful stop.
     public func killContainer(id: String) throws {
         let result = runCapturing(["kill", id])
         guard result.success else { throw Self.cliError(result.output, fallback: "Failed to kill container '\(id)'.") }
-        syncRoutingConfig()
+        syncRoutingConfig(using: getContainers())
     }
     
     // MARK: - Image APIs
@@ -207,26 +218,13 @@ public final class ContainerManager: @unchecked Sendable {
         do {
             let list = try decoder.decode([CLIImageListItem].self, from: data)
             return list.map { item -> ContainerImage in
-                let ref = item.reference
-                
-                // Extract repository name and tag
-                var cleanRef = ref
-                if cleanRef.hasPrefix("docker.io/library/") {
-                    cleanRef = String(cleanRef.dropFirst("docker.io/library/".count))
-                } else if cleanRef.hasPrefix("docker.io/") {
-                    cleanRef = String(cleanRef.dropFirst("docker.io/".count))
-                }
-                
-                let parts = cleanRef.split(separator: ":")
-                let repo = String(parts.first ?? "unknown")
-                let tag = parts.count > 1 ? String(parts[1]) : "latest"
-                
-                // Format size
-                let sizeInMB = Double(item.descriptor.size) / (1024.0 * 1024.0)
-                let sizeStr = sizeInMB > 1.0 ? String(format: "%.1f MB", sizeInMB) : "N/A"
-                
+                let (repo, tag) = Self.splitImageReference(item.reference)
+                // `descriptor.size` is usually KB-scale; show real bytes humanised, not "N/A".
+                let sizeStr = item.descriptor.size > 0
+                    ? Self.humanFileSize(String(item.descriptor.size))
+                    : "N/A"
                 return ContainerImage(
-                    id: ref,
+                    id: item.reference,
                     repository: repo,
                     tag: tag,
                     size: sizeStr,
@@ -239,11 +237,44 @@ public final class ContainerManager: @unchecked Sendable {
         }
     }
     
+    /// Split an OCI image reference into `(repository, tag)`. Handles the docker.io
+    /// prefixes, registry `host:port` (a tag never contains `/`, so a `:` only counts
+    /// after the last `/`), and `@sha256:` digest references.
+    static func splitImageReference(_ reference: String) -> (repository: String, tag: String) {
+        var cleanRef = reference
+        if cleanRef.hasPrefix("docker.io/library/") {
+            cleanRef = String(cleanRef.dropFirst("docker.io/library/".count))
+        } else if cleanRef.hasPrefix("docker.io/") {
+            cleanRef = String(cleanRef.dropFirst("docker.io/".count))
+        }
+
+        // Digest reference: repo@sha256:<hex> — keep the repo, show a short digest as the tag.
+        if let at = cleanRef.range(of: "@") {
+            let repo = String(cleanRef[..<at.lowerBound])
+            var digest = String(cleanRef[at.upperBound...])
+            if let colon = digest.range(of: ":") {
+                digest = "@" + String(digest[colon.upperBound...].prefix(12))
+            }
+            return (repo, digest)
+        }
+
+        // A tag separator ':' only counts after the last '/' (else it's a host:port).
+        let lastSlash = cleanRef.lastIndex(of: "/")
+        let searchStart = lastSlash.map { cleanRef.index(after: $0) } ?? cleanRef.startIndex
+        if let colon = cleanRef.range(of: ":", range: searchStart..<cleanRef.endIndex) {
+            let repo = String(cleanRef[..<colon.lowerBound])
+            let tag = String(cleanRef[colon.upperBound...])
+            return (repo, tag.isEmpty ? "latest" : tag)
+        }
+        return (cleanRef, "latest")
+    }
+
     /// Pull an image. Returns whether the pull exited cleanly + the combined output,
     /// so the caller can surface real failures (bad tag, auth, network) honestly.
+    /// No timeout — a real pull legitimately takes minutes.
     public func addImage(repository: String, tag: String) -> (success: Bool, output: String) {
         let imageRef = tag.isEmpty ? repository : "\(repository):\(tag)"
-        return runCapturing(["image", "pull", imageRef])
+        return runCapturing(["image", "pull", imageRef], timeout: nil)
     }
 
     /// Build an image from a Dockerfile via real `container build`. Blocking — call
@@ -252,7 +283,8 @@ public final class ContainerManager: @unchecked Sendable {
     public func buildImage(tag: String, dockerfilePath: String?, contextDir: String) -> (success: Bool, log: String) {
         // `container build` resolves -f relative to CWD, so always pass an absolute Dockerfile path.
         let dockerfile = (dockerfilePath?.isEmpty == false) ? dockerfilePath! : "\(contextDir)/Dockerfile"
-        let result = runCapturing(["build", "-t", tag, "-f", dockerfile, contextDir])
+        // No timeout — a real build legitimately takes minutes.
+        let result = runCapturing(["build", "-t", tag, "-f", dockerfile, contextDir], timeout: nil)
         return (result.success, result.output)
     }
 
@@ -264,7 +296,8 @@ public final class ContainerManager: @unchecked Sendable {
     /// Push an image to its registry: `container image push <reference>`. Requires a prior
     /// `container registry login`; returns the real failure (e.g. unauthorized) honestly.
     public func pushImage(reference: String) -> (success: Bool, output: String) {
-        return runCapturing(["image", "push", reference])
+        // No timeout — a real push legitimately takes minutes.
+        return runCapturing(["image", "push", reference], timeout: nil)
     }
 
     /// Log in to a registry. The password is written to the process's STDIN via
@@ -305,25 +338,18 @@ public final class ContainerManager: @unchecked Sendable {
     }
 
     /// Run the real `container` binary capturing combined stdout+stderr and the exit status.
-    /// Blocking — call off the main thread. (The CLI buffers some output and writes it at exit.)
-    private func runCapturing(_ arguments: [String]) -> (success: Bool, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/container")
-        process.arguments = arguments
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            // Drain to EOF first (avoids a pipe-buffer deadlock), then reap the exit status.
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (process.terminationStatus == 0, String(data: data, encoding: .utf8) ?? "")
-        } catch {
+    /// Blocking — call off the main thread. `timeout` bounds short commands so a wedged
+    /// call can't hang forever; pass `nil` for legitimately long operations (build/pull/push).
+    private func runCapturing(_ arguments: [String], timeout: TimeInterval? = 15) -> (success: Bool, output: String) {
+        let result = ProcessRunner.run(executableURL: URL(fileURLWithPath: "/usr/local/bin/container"),
+                                       arguments: arguments, timeout: timeout)
+        if let error = result.launchError {
             return (false, "Failed to launch container: \(error.localizedDescription)")
         }
+        if result.timedOut {
+            return (false, "The container command timed out.")
+        }
+        return (result.exitCode == 0, result.output)
     }
 
     public func removeImage(id: String) throws {
@@ -384,34 +410,69 @@ public final class ContainerManager: @unchecked Sendable {
 
     /// True if the Apple container apiserver is running. When it isn't, list/stats
     /// calls return nothing — so the UI can say "engine off" instead of "no containers".
+    /// Cached for a few seconds: engine up/down transitions are rare, so the hot refresh
+    /// path shouldn't spawn `system status` on every 1.5s tick.
     public func isRuntimeRunning() -> Bool {
-        return runCapturing(["system", "status"]).output.contains("apiserver is running")
+        let now = Date()
+        statsLock.lock()
+        if let cache = runtimeStatusCache, now.timeIntervalSince(cache.at) < 4.0 {
+            defer { statsLock.unlock() }
+            return cache.value
+        }
+        statsLock.unlock()
+
+        // Short timeout: this is a liveness probe, not a long operation.
+        let running = runCapturing(["system", "status"], timeout: 3).output.contains("apiserver is running")
+
+        statsLock.lock()
+        runtimeStatusCache = (running, now)
+        statsLock.unlock()
+        return running
     }
 
     /// Reclaim disk by removing unreferenced images and snapshots.
     /// The runtime has no `volume prune`; image prune is the real disk-reclaim path.
     /// Real total bytes used by all volume images on disk (sum of each volume's
     /// backing `.img` file size). 0 if none.
-    public func volumeStorageBytes() -> Int64 {
+    public func volumeStorageBytes(_ volumes: [Volume]? = nil) -> Int64 {
         let fm = FileManager.default
-        return getVolumes().reduce(Int64(0)) { total, volume in
+        return (volumes ?? getVolumes()).reduce(Int64(0)) { total, volume in
             guard let attrs = try? fm.attributesOfItem(atPath: volume.mountPoint),
                   let bytes = attrs[.size] as? Int64 else { return total }
             return total + bytes
         }
     }
 
-    public func pruneStorage() {
-        _ = engine.run(["image", "prune"])
+    /// Reclaim disk by removing unreferenced images/snapshots. Unbounded — a real prune
+    /// over a large store legitimately takes a while; returns the real outcome.
+    @discardableResult
+    public func pruneStorage() -> (success: Bool, output: String) {
+        return runCapturing(["image", "prune"], timeout: nil)
+    }
+
+    /// Re-sync `routing.json` from current real container state. Cheap in steady state
+    /// (the route set is compared and written only when it changed). Because
+    /// `getContainers()` is now a pure read, this is the hook that prunes routes for
+    /// containers that crashed or exited out-of-band; the daemon and GUI call it each tick.
+    public func reconcileRouting(using containers: [Container]? = nil) {
+        syncRoutingConfig(using: containers ?? getContainers())
     }
     
     // MARK: - Hardware Stats API
     
     public func getStats() -> APCHardwareStats {
+        // Convenience for callers without a list in hand (e.g. the daemon): fetch once.
+        return getStats(containers: getContainers())
+    }
+
+    /// Stats derived from an already-fetched container list — avoids a second
+    /// `getContainers()` enumeration within the same refresh tick.
+    public func getStats(containers: [Container]) -> APCHardwareStats {
         // Real figures: live host CPU, and memory committed by running containers
         // against the VM's configured ceiling.
-        let active = getContainers().filter { $0.state == "running" }
-        let committedMemoryMB = active.reduce(0.0) { $0 + $1.memoryLimitMB }
+        let committedMemoryMB = containers
+            .filter { $0.state == "running" }
+            .reduce(0.0) { $0 + $1.memoryLimitMB }
         let maxMemoryMB = Double(VMManager.shared.loadVMConfig().allocatedMemoryGB) * 1024.0
         return APCHardwareStats(cpuUsage: hostCPUUsage(), memoryUsage: committedMemoryMB, maxMemory: maxMemoryMB)
     }
@@ -576,17 +637,32 @@ public final class ContainerManager: @unchecked Sendable {
     
     // MARK: - Internal Routing sync
     
-    private func syncRoutingConfig() {
+    /// Rebuild `routing.json` from an already-fetched container list (no re-enumeration),
+    /// writing only when the route set actually changed.
+    private func syncRoutingConfig(using containers: [Container]) {
         var routes: [String: Int] = [:]
-
-        for container in getContainers() where container.state == "running" {
+        for container in containers where container.state == "running" {
             routes.merge(container.routeMappings) { _, new in new }
+        }
+        let config = RoutingConfig(routes: routes)
+
+        routingLock.lock()
+        defer { routingLock.unlock() }
+        // Skip the write only when nothing changed AND the file is still on disk — so an
+        // out-of-band deletion is recovered rather than masked by the dedup.
+        if config == lastWrittenRouting && FileManager.default.fileExists(atPath: routingConfigURL.path) {
+            return
         }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(RoutingConfig(routes: routes)) {
-            try? data.write(to: routingConfigURL)
+        if let data = try? encoder.encode(config) {
+            do {
+                try data.write(to: routingConfigURL)
+                lastWrittenRouting = config   // only record success on an actual successful write
+            } catch {
+                // Leave lastWrittenRouting unchanged so a transient failure retries next tick.
+            }
         }
     }
     

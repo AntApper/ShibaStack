@@ -37,7 +37,13 @@ do {
     // Main run loop to keep daemon alive
     let runLoop = RunLoop.current
     while runLoop.run(mode: .default, before: Date(timeIntervalSinceNow: 5.0)) {
-        let stats = containerManager.getStats()
+        // Fetch the container list once, then derive stats and reconcile routing from it.
+        // Reconciliation re-prunes routes for containers that exited/crashed out-of-band
+        // (getContainers() itself is a pure read); the route-set dedup keeps it write-free
+        // unless something actually changed.
+        let conts = containerManager.getContainers()
+        containerManager.reconcileRouting(using: conts)
+        let stats = containerManager.getStats(containers: conts)
         print("[Stats Monitor] CPU: \(String(format: "%.1f", stats.cpuUsage))% | RAM: \(String(format: "%.1f", stats.memoryUsage)) MB / \(String(format: "%.0f", stats.maxMemory)) MB | VM Engine: \(vmManager.getVMState())")
         fflush(stdout)
     }
